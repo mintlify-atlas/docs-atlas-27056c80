@@ -1,0 +1,131 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Effect Atom",
+  "projectDescription": "A reactive state management library for Effect with seamless integration for React, Vue, and Solid",
+  "theme": "palm",
+  "primaryColor": "#7c3aed",
+  "lightColor": "#a78bfa",
+  "darkColor": "#6d28d9",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/atoms",
+              "concepts/derived-state",
+              "concepts/effects",
+              "concepts/result-type",
+              "concepts/scoped-effects"
+            ]
+          },
+          {
+            "group": "Framework Integration",
+            "pages": [
+              "frameworks/react",
+              "frameworks/vue",
+              "frameworks/solid"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/services-and-layers",
+              "guides/streams",
+              "guides/atom-families",
+              "guides/functions",
+              "guides/event-listeners",
+              "guides/search-params",
+              "guides/local-storage",
+              "guides/reactivity",
+              "guides/hydration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/rpc-integration",
+              "advanced/http-api-integration",
+              "advanced/livestore",
+              "advanced/optimistic-updates"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core",
+            "pages": [
+              "api/atom",
+              "api/result",
+              "api/registry",
+              "api/atom-ref"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "api/atom-http-api",
+              "api/atom-rpc",
+              "api/hydration"
+            ]
+          },
+          {
+            "group": "React Hooks",
+            "pages": [
+              "api/hooks/use-atom-value",
+              "api/hooks/use-atom-set",
+              "api/hooks/use-atom",
+              "api/hooks/use-atom-suspense"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Reactive state management built on Effect",
+    "Seamless integration with React, Vue, and Solid",
+    "Built-in support for async effects and streams",
+    "Effect services and layers integration",
+    "RPC and HTTP API client integration",
+    "Optimistic updates and error handling",
+    "Server-side rendering and hydration support",
+    "TypeScript-first with full type inference"
+  ],
+  "publicApiSurface": [
+    "Atom.make",
+    "Atom.runtime",
+    "Atom.family",
+    "Atom.fn",
+    "Atom.pull",
+    "Atom.map",
+    "Atom.withReactivity",
+    "Atom.keepAlive",
+    "Atom.kvs",
+    "Atom.searchParam",
+    "Result.builder",
+    "Result.getOrElse",
+    "Result.match",
+    "Registry.make",
+    "useAtomValue",
+    "useAtomSet",
+    "useAtom",
+    "useAtomSuspense",
+    "AtomHttpApi.Tag",
+    "AtomRpc.Tag",
+    "Hydration.make"
+  ]
+}
