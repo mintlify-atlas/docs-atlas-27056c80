@@ -1,0 +1,543 @@
+---
+title: Registry
+description: Complete API reference for the Registry module - manage atom subscriptions and state
+---
+
+The `Registry` module provides a container for managing atom state and subscriptions. It's responsible for computing atom values, tracking dependencies, and notifying subscribers of changes.
+
+## Type definitions
+
+### Registry
+
+```typescript
+interface Registry {
+  readonly [TypeId]: TypeId
+  readonly getNodes: () => ReadonlyMap<Atom.Atom<any> | string, Node<any>>
+  readonly get: <A>(atom: Atom.Atom<A>) => A
+  readonly mount: <A>(atom: Atom.Atom<A>) => () => void
+  readonly refresh: <A>(atom: Atom.Atom<A>) => void
+  readonly set: <R, W>(atom: Atom.Writable<R, W>, value: W) => void
+  readonly setSerializable: (key: string, encoded: unknown) => void
+  readonly modify: <R, W, A>(atom: Atom.Writable<R, W>, f: (_: R) => [returnValue: A, nextValue: W]) => A
+  readonly update: <R, W>(atom: Atom.Writable<R, W>, f: (_: R) => W) => void
+  readonly subscribe: <A>(atom: Atom.Atom<A>, f: (_: A) => void, options?: {
+    readonly immediate?: boolean
+  }) => () => void
+  readonly reset: () => void
+  readonly dispose: () => void
+}
+```
+
+The registry manages atom state and provides methods for reading, writing, and subscribing to atoms.
+
+## Creation
+
+### make
+
+Create a new Registry instance.
+
+```typescript
+const make: (options?: {
+  readonly initialValues?: Iterable<readonly [Atom.Atom<any>, any]> | undefined
+  readonly scheduleTask?: ((f: () => void) => void) | undefined
+  readonly timeoutResolution?: number | undefined
+  readonly defaultIdleTTL?: number | undefined
+}) => Registry
+```
+
+<ParamField path="options.initialValues" type="Iterable<[Atom, value]>">
+  Initial values to hydrate atoms with
+</ParamField>
+
+<ParamField path="options.scheduleTask" type="(f: () => void) => void">
+  Custom task scheduler for batching updates. Defaults to immediate execution.
+</ParamField>
+
+<ParamField path="options.timeoutResolution" type="number">
+  Resolution in milliseconds for idle TTL checks. Defaults to 1000.
+</ParamField>
+
+<ParamField path="options.defaultIdleTTL" type="number">
+  Default idle TTL in milliseconds for all atoms. Atoms are disposed after this time if they have no subscribers.
+</ParamField>
+
+**Example**
+
+```typescript
+import { Registry } from "@effect-rx/rx"
+
+const registry = Registry.make()
+```
+
+**Example - With initial values**
+
+```typescript
+const registry = Registry.make({
+  initialValues: [
+    [userAtom, { id: 1, name: "Alice" }],
+    [themeAtom, "dark"]
+  ]
+})
+```
+
+**Example - With React integration**
+
+```typescript
+import { startTransition } from "react"
+
+const registry = Registry.make({
+  scheduleTask: (f) => startTransition(f)
+})
+```
+
+## Reading atoms
+
+### get
+
+Get the current value of an atom.
+
+```typescript
+registry.get<A>(atom: Atom.Atom<A>): A
+```
+
+<ParamField path="atom" type="Atom<A>">
+  The atom to read
+</ParamField>
+
+**Example**
+
+```typescript
+const count = registry.get(countAtom)
+console.log(count) // 42
+```
+
+<Note>
+  Reading an atom computes its value if it hasn't been computed yet, and tracks it as a dependency of the current atom context (if any).
+</Note>
+
+## Writing atoms
+
+### set
+
+Set the value of a writable atom.
+
+```typescript
+registry.set<R, W>(atom: Atom.Writable<R, W>, value: W): void
+```
+
+<ParamField path="atom" type="Writable<R, W>">
+  The writable atom
+</ParamField>
+
+<ParamField path="value" type="W">
+  The new value
+</ParamField>
+
+**Example**
+
+```typescript
+registry.set(countAtom, 42)
+registry.set(userAtom, { id: 1, name: "Alice" })
+```
+
+### update
+
+Update an atom's value based on its current value.
+
+```typescript
+registry.update<R, W>(atom: Atom.Writable<R, W>, f: (_: R) => W): void
+```
+
+<ParamField path="atom" type="Writable<R, W>">
+  The writable atom
+</ParamField>
+
+<ParamField path="f" type="(current: R) => W">
+  Function to compute new value from current value
+</ParamField>
+
+**Example**
+
+```typescript
+registry.update(countAtom, (n) => n + 1)
+```
+
+### modify
+
+Modify an atom and return a value.
+
+```typescript
+registry.modify<R, W, A>(
+  atom: Atom.Writable<R, W>,
+  f: (_: R) => [returnValue: A, nextValue: W]
+): A
+```
+
+<ParamField path="atom" type="Writable<R, W>">
+  The writable atom
+</ParamField>
+
+<ParamField path="f" type="function">
+  Function that returns both a return value and the next atom value
+</ParamField>
+
+**Example**
+
+```typescript
+const previousCount = registry.modify(
+  countAtom,
+  (n) => [n, n + 1]
+)
+console.log(previousCount) // 42
+console.log(registry.get(countAtom)) // 43
+```
+
+### setSerializable
+
+Set a serializable atom's value using its serialization key.
+
+```typescript
+registry.setSerializable(key: string, encoded: unknown): void
+```
+
+<ParamField path="key" type="string">
+  The serialization key of the atom
+</ParamField>
+
+<ParamField path="encoded" type="unknown">
+  The encoded value
+</ParamField>
+
+**Example**
+
+```typescript
+// Hydrate from server data
+const serverData = {
+  "user-preferences": { theme: "dark", locale: "en" }
+}
+
+for (const [key, value] of Object.entries(serverData)) {
+  registry.setSerializable(key, value)
+}
+```
+
+## Subscriptions
+
+### subscribe
+
+Subscribe to changes in an atom's value.
+
+```typescript
+registry.subscribe<A>(
+  atom: Atom.Atom<A>,
+  f: (_: A) => void,
+  options?: { readonly immediate?: boolean }
+): () => void
+```
+
+<ParamField path="atom" type="Atom<A>">
+  The atom to subscribe to
+</ParamField>
+
+<ParamField path="f" type="(value: A) => void">
+  Callback function called when the value changes
+</ParamField>
+
+<ParamField path="options.immediate" type="boolean" default="false">
+  If true, calls the callback immediately with the current value
+</ParamField>
+
+**Returns** a cleanup function to unsubscribe.
+
+**Example**
+
+```typescript
+const unsubscribe = registry.subscribe(
+  countAtom,
+  (count) => console.log("Count:", count)
+)
+
+registry.set(countAtom, 42) // Logs: "Count: 42"
+
+unsubscribe() // Stop listening
+```
+
+**Example - Immediate callback**
+
+```typescript
+registry.subscribe(
+  countAtom,
+  (count) => console.log("Count:", count),
+  { immediate: true }
+)
+// Immediately logs current value
+```
+
+### mount
+
+Mount an atom to keep it alive even without subscribers.
+
+```typescript
+registry.mount<A>(atom: Atom.Atom<A>): () => void
+```
+
+<ParamField path="atom" type="Atom<A>">
+  The atom to mount
+</ParamField>
+
+**Returns** a cleanup function to unmount the atom.
+
+**Example**
+
+```typescript
+const unmount = registry.mount(backgroundTaskAtom)
+
+// Atom stays active even with no subscribers
+// ...
+
+unmount() // Allow disposal
+```
+
+## Lifecycle
+
+### refresh
+
+Force an atom to recompute its value.
+
+```typescript
+registry.refresh<A>(atom: Atom.Atom<A>): void
+```
+
+<ParamField path="atom" type="Atom<A>">
+  The atom to refresh
+</ParamField>
+
+**Example**
+
+```typescript
+// Manually refresh data
+registry.refresh(userAtom)
+```
+
+### reset
+
+Reset the registry, clearing all atom state.
+
+```typescript
+registry.reset(): void
+```
+
+**Example**
+
+```typescript
+// Clear all cached state
+registry.reset()
+```
+
+<Warning>
+  This clears all atom values and resets them to their initial state. Subscribers remain active.
+</Warning>
+
+### dispose
+
+Dispose of the registry and all its atoms.
+
+```typescript
+registry.dispose(): void
+```
+
+**Example**
+
+```typescript
+// Clean up when done
+registry.dispose()
+```
+
+<Warning>
+  After disposal, the registry cannot be used. Create a new registry if needed.
+</Warning>
+
+## Debugging
+
+### getNodes
+
+Get all active atom nodes for debugging.
+
+```typescript
+registry.getNodes(): ReadonlyMap<Atom.Atom<any> | string, Node<any>>
+```
+
+**Example**
+
+```typescript
+const nodes = registry.getNodes()
+console.log("Active atoms:", nodes.size)
+
+for (const [atom, node] of nodes) {
+  console.log("Atom:", atom)
+  console.log("Value:", node.value())
+}
+```
+
+## Effect integration
+
+### AtomRegistry
+
+Effect Tag for accessing the current registry.
+
+```typescript
+class AtomRegistry extends Context.Tag("@effect/atom/Registry/CurrentRegistry")<
+  AtomRegistry,
+  Registry
+>() {}
+```
+
+**Example**
+
+```typescript
+import { Effect } from "effect"
+import { Registry } from "@effect-rx/rx"
+
+const program = Effect.gen(function* () {
+  const registry = yield* Registry.AtomRegistry
+  const count = registry.get(countAtom)
+  return count
+})
+```
+
+### layer
+
+Default Layer for providing a Registry.
+
+```typescript
+const layer: Layer.Layer<AtomRegistry>
+```
+
+**Example**
+
+```typescript
+import { Effect, Layer } from "effect"
+
+const program = Effect.gen(function* () {
+  const registry = yield* Registry.AtomRegistry
+  return registry.get(countAtom)
+})
+
+const runnable = Effect.provide(program, Registry.layer)
+```
+
+### layerOptions
+
+Create a custom Layer with options.
+
+```typescript
+const layerOptions: (options?: {
+  readonly initialValues?: Iterable<readonly [Atom.Atom<any>, any]> | undefined
+  readonly scheduleTask?: ((f: () => void) => void) | undefined
+  readonly timeoutResolution?: number | undefined
+  readonly defaultIdleTTL?: number | undefined
+}) => Layer.Layer<AtomRegistry>
+```
+
+**Example**
+
+```typescript
+const customLayer = Registry.layerOptions({
+  defaultIdleTTL: 60000, // 1 minute
+  timeoutResolution: 5000 // Check every 5 seconds
+})
+
+const program = Effect.provide(myProgram, customLayer)
+```
+
+## Stream conversions
+
+### toStream
+
+Convert an atom to a Stream of its values.
+
+```typescript
+const toStream: {
+  <A>(atom: Atom.Atom<A>): (self: Registry) => Stream.Stream<A>
+  <A>(self: Registry, atom: Atom.Atom<A>): Stream.Stream<A>
+}
+```
+
+**Example**
+
+```typescript
+const countStream = Registry.toStream(registry, countAtom)
+
+Stream.runForEach(countStream, (count) =>
+  Console.log(`Count: ${count}`)
+)
+```
+
+### toStreamResult
+
+Convert a Result atom to a Stream that emits success values and fails on errors.
+
+```typescript
+const toStreamResult: {
+  <A, E>(atom: Atom.Atom<Result.Result<A, E>>): (self: Registry) => Stream.Stream<A, E>
+  <A, E>(self: Registry, atom: Atom.Atom<Result.Result<A, E>>): Stream.Stream<A, E>
+}
+```
+
+**Example**
+
+```typescript
+const userStream = Registry.toStreamResult(registry, userAtom)
+
+Stream.runForEach(userStream, (user) =>
+  Console.log(`User: ${user.name}`)
+)
+```
+
+### getResult
+
+Get a Result atom's value as an Effect.
+
+```typescript
+const getResult: {
+  <A, E>(atom: Atom.Atom<Result.Result<A, E>>, options?: {
+    readonly suspendOnWaiting?: boolean | undefined
+  }): (self: Registry) => Effect.Effect<A, E>
+  <A, E>(self: Registry, atom: Atom.Atom<Result.Result<A, E>>, options?: {
+    readonly suspendOnWaiting?: boolean | undefined
+  }): Effect.Effect<A, E>
+}
+```
+
+<ParamField path="options.suspendOnWaiting" type="boolean" default="false">
+  If true, the Effect suspends while the result is in a waiting state
+</ParamField>
+
+**Example**
+
+```typescript
+const getUserEffect = Registry.getResult(registry, userAtom)
+
+const program = Effect.gen(function* () {
+  const user = yield* getUserEffect
+  console.log(user.name)
+})
+```
+
+## Type guards
+
+### isRegistry
+
+Check if a value is a Registry.
+
+```typescript
+const isRegistry: (u: unknown) => u is Registry
+```
+
+**Example**
+
+```typescript
+if (Registry.isRegistry(value)) {
+  const count = value.get(countAtom)
+}
+```

@@ -1,0 +1,365 @@
+---
+title: Local storage persistence
+description: Persist atom state to localStorage using KeyValueStore
+---
+
+Effect Atom integrates with Effect's `KeyValueStore` to provide type-safe, schema-validated persistence to localStorage and other storage backends.
+
+## Basic usage
+
+Use `Atom.kvs` to create an atom that persists to a `KeyValueStore`:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { BrowserKeyValueStore } from "@effect/platform-browser"
+import { Schema } from "effect"
+
+const runtime = Atom.runtime(BrowserKeyValueStore.layerLocalStorage)
+
+const themeAtom = Atom.kvs({
+  runtime: runtime,
+  key: "theme",
+  schema: Schema.Literal("light", "dark"),
+  defaultValue: () => "light"
+})
+```
+
+The atom automatically loads the value from localStorage on mount and saves changes back:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+
+function ThemeToggle() {
+  const [theme, setTheme] = useAtom(themeAtom)
+  
+  return (
+    <button onClick={() => setTheme(theme === "light" ? "dark" : "light")}>
+      Current theme: {theme}
+    </button>
+  )
+}
+```
+
+## Schema validation
+
+The `schema` parameter ensures type safety and validation:
+
+```ts
+import { Schema } from "effect"
+
+// Store a number
+const countAtom = Atom.kvs({
+  runtime: runtime,
+  key: "count",
+  schema: Schema.Number,
+  defaultValue: () => 0
+})
+
+// Store a boolean
+const flagAtom = Atom.kvs({
+  runtime: runtime,
+  key: "flag",
+  schema: Schema.Boolean,
+  defaultValue: () => false
+})
+
+// Store a complex object
+const userPrefsSchema = Schema.Struct({
+  fontSize: Schema.Number,
+  enableNotifications: Schema.Boolean,
+  language: Schema.Literal("en", "es", "fr")
+})
+
+const userPrefsAtom = Atom.kvs({
+  runtime: runtime,
+  key: "userPrefs",
+  schema: userPrefsSchema,
+  defaultValue: () => ({
+    fontSize: 16,
+    enableNotifications: true,
+    language: "en" as const
+  })
+})
+```
+
+## Complete example
+
+<Steps>
+  <Step title="Create a runtime with localStorage">
+    Set up an `AtomRuntime` with the localStorage layer:
+    
+    ```ts
+    import { Atom } from "@effect-atom/atom-react"
+    import { BrowserKeyValueStore } from "@effect/platform-browser"
+    
+    const storageRuntime = Atom.runtime(
+      BrowserKeyValueStore.layerLocalStorage
+    )
+    ```
+  </Step>
+  
+  <Step title="Define your atoms">
+    Create atoms for each piece of state you want to persist:
+    
+    ```ts
+    import { Schema } from "effect"
+    
+    const settingsSchema = Schema.Struct({
+      volume: Schema.Number,
+      autoplay: Schema.Boolean,
+      quality: Schema.Literal("low", "medium", "high")
+    })
+    
+    const settingsAtom = Atom.kvs({
+      runtime: storageRuntime,
+      key: "videoSettings",
+      schema: settingsSchema,
+      defaultValue: () => ({
+        volume: 0.8,
+        autoplay: false,
+        quality: "medium" as const
+      })
+    })
+    ```
+  </Step>
+  
+  <Step title="Use in your components">
+    Read and write the persisted state:
+    
+    ```tsx
+    import { useAtom } from "@effect-atom/atom-react"
+    
+    function VideoSettings() {
+      const [settings, setSettings] = useAtom(settingsAtom)
+      
+      return (
+        <div>
+          <label>
+            Volume: {Math.round(settings.volume * 100)}%
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={settings.volume * 100}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  volume: parseInt(e.target.value) / 100
+                })
+              }
+            />
+          </label>
+          
+          <label>
+            <input
+              type="checkbox"
+              checked={settings.autoplay}
+              onChange={(e) =>
+                setSettings({
+                  ...settings,
+                  autoplay: e.target.checked
+                })
+              }
+            />
+            Autoplay
+          </label>
+          
+          <select
+            value={settings.quality}
+            onChange={(e) =>
+              setSettings({
+                ...settings,
+                quality: e.target.value as "low" | "medium" | "high"
+              })
+            }
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+      )
+    }
+    ```
+  </Step>
+</Steps>
+
+## Default values during loading
+
+When the storage is being read asynchronously, the `defaultValue` function provides the initial state:
+
+```ts
+const atom = Atom.kvs({
+  runtime: storageRuntime,
+  key: "myKey",
+  schema: Schema.Number,
+  defaultValue: () => {
+    console.log("Computing default value")
+    return 0
+  }
+})
+```
+
+<Info>
+  The `defaultValue` function is memoized during the loading phase, so it won't
+  be called multiple times while waiting for storage to load.
+</Info>
+
+From the test suite at `Atom.test.ts:1530-1576`:
+
+```ts
+it("memoizes defaultValue while loading empty storage", async () => {
+  let calls = 0
+  
+  const atom = Atom.kvs({
+    runtime: kvsRuntime,
+    key: "default-value-key",
+    schema: Schema.Number,
+    defaultValue: () => {
+      calls++
+      return 0
+    }
+  })
+  
+  const r = Registry.make()
+  r.mount(atom)
+  
+  expect(r.get(atom)).toEqual(0)
+  expect(calls).toEqual(1) // Called once
+  
+  await vitest.advanceTimersByTimeAsync(50)
+  
+  expect(r.get(atom)).toEqual(0)
+  expect(calls).toEqual(1) // Still called only once
+})
+```
+
+## Implementation details
+
+### Function signature
+
+From `Atom.ts:1788-1793`:
+
+```ts
+export const kvs = <A>(options: {
+  readonly runtime: AtomRuntime<KeyValueStore.KeyValueStore, any>
+  readonly key: string
+  readonly schema: Schema.Schema<A, any>
+  readonly defaultValue: LazyArg<A>
+}): Writable<A>
+```
+
+### How it works
+
+The `Atom.kvs` function:
+
+1. Creates a `setAtom` that writes to the `KeyValueStore` using the schema
+2. Creates a `resultAtom` that reads from the `KeyValueStore`
+3. Returns a writable atom that:
+   - Subscribes to storage changes
+   - Returns the stored value if present, otherwise the default
+   - Updates both local state and storage when written to
+
+## Alternative storage backends
+
+You can use any `KeyValueStore` implementation:
+
+```ts
+import { BrowserKeyValueStore } from "@effect/platform-browser"
+
+// localStorage (default)
+const localStorageRuntime = Atom.runtime(
+  BrowserKeyValueStore.layerLocalStorage
+)
+
+// sessionStorage
+const sessionStorageRuntime = Atom.runtime(
+  BrowserKeyValueStore.layerSessionStorage
+)
+
+// IndexedDB
+const indexedDbRuntime = Atom.runtime(
+  BrowserKeyValueStore.layerIndexedDb
+)
+```
+
+<Note>
+  You can also implement custom `KeyValueStore` layers for other storage
+  backends like Chrome extension storage, AsyncStorage in React Native, or
+  remote storage APIs.
+</Note>
+
+## Best practices
+
+<Steps>
+  <Step title="Choose appropriate keys">
+    Use descriptive, namespaced keys to avoid conflicts:
+    
+    ```ts
+    // Good
+    key: "app:settings:theme"
+    key: "user:preferences:notifications"
+    
+    // Avoid
+    key: "theme"
+    key: "prefs"
+    ```
+  </Step>
+  
+  <Step title="Handle schema evolution">
+    When your schema changes, provide migration logic or use versioned keys:
+    
+    ```ts
+    const settingsAtom = Atom.kvs({
+      runtime: storageRuntime,
+      key: "settings:v2", // Version the key
+      schema: newSettingsSchema,
+      defaultValue: () => defaultSettings
+    })
+    ```
+  </Step>
+  
+  <Step title="Keep stored data small">
+    localStorage has size limits (typically 5-10MB). Store only essential data:
+    
+    ```ts
+    // Good: Store preferences
+    const prefsAtom = Atom.kvs({
+      key: "prefs",
+      schema: preferencesSchema,
+      defaultValue: () => defaultPrefs
+    })
+    
+    // Avoid: Storing large datasets
+    // Consider using IndexedDB for large data
+    ```
+  </Step>
+  
+  <Step title="Provide sensible defaults">
+    Always ensure your `defaultValue` returns a valid value:
+    
+    ```ts
+    defaultValue: () => ({
+      theme: "light",
+      fontSize: 16,
+      // ... all required fields
+    })
+    ```
+  </Step>
+</Steps>
+
+## Error handling
+
+If schema validation fails when reading from storage, the atom falls back to the default value:
+
+```ts
+const versionAtom = Atom.kvs({
+  runtime: storageRuntime,
+  key: "version",
+  schema: Schema.Number,
+  defaultValue: () => 1
+})
+
+// If localStorage has "version": "invalid"
+// The atom will use the default value: 1
+```

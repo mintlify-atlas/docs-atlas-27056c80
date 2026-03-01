@@ -1,0 +1,222 @@
+---
+title: URL search parameters
+description: Sync atoms with URL search parameters for shareable state
+---
+
+Effect Atom provides built-in support for synchronizing state with URL search parameters, making it easy to create shareable URLs and maintain navigation state.
+
+## Basic usage
+
+The `Atom.searchParam` function creates a writable atom that automatically syncs with a URL search parameter:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const searchAtom = Atom.searchParam("q")
+```
+
+When you read or write to this atom, it automatically keeps the URL search parameter in sync:
+
+```tsx
+import { Atom, useAtom } from "@effect-atom/atom-react"
+
+const searchAtom = Atom.searchParam("q")
+
+function SearchInput() {
+  const [query, setQuery] = useAtom(searchAtom)
+  
+  return (
+    <input
+      type="text"
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      placeholder="Search..."
+    />
+  )
+}
+```
+
+<Info>
+  URL updates are debounced by 500ms to avoid excessive history entries.
+</Info>
+
+## Using schemas for type safety
+
+You can use Effect's `Schema` module to parse and validate search parameters:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Schema } from "effect"
+
+// Parse as a number
+const pageAtom = Atom.searchParam("page", {
+  schema: Schema.NumberFromString
+})
+
+// Parse as a boolean
+const showDetailsAtom = Atom.searchParam("details", {
+  schema: Schema.BooleanFromString
+})
+```
+
+When using a schema, the atom returns `Option<A>` instead of `string`:
+
+```tsx
+import { Atom, useAtomValue } from "@effect-atom/atom-react"
+import { Option, Schema } from "effect"
+
+const pageAtom = Atom.searchParam("page", {
+  schema: Schema.NumberFromString
+})
+
+function Pagination() {
+  const pageOption = useAtomValue(pageAtom)
+  const page = Option.getOrElse(pageOption, () => 1)
+  
+  return <div>Current page: {page}</div>
+}
+```
+
+## Complete example with pagination
+
+<Steps>
+  <Step title="Create search param atoms">
+    Define atoms for your URL parameters:
+    
+    ```ts
+    import { Atom } from "@effect-atom/atom-react"
+    import { Schema } from "effect"
+    
+    const pageAtom = Atom.searchParam("page", {
+      schema: Schema.NumberFromString
+    })
+    
+    const sortAtom = Atom.searchParam("sort")
+    
+    const filterAtom = Atom.searchParam("filter")
+    ```
+  </Step>
+  
+  <Step title="Use in components">
+    Read and write the atoms in your React components:
+    
+    ```tsx
+    import { useAtom, useAtomValue } from "@effect-atom/atom-react"
+    import { Option } from "effect"
+    
+    function ProductList() {
+      const [page, setPage] = useAtom(pageAtom)
+      const [sort, setSort] = useAtom(sortAtom)
+      const [filter, setFilter] = useAtom(filterAtom)
+      
+      const currentPage = Option.getOrElse(page, () => 1)
+      
+      return (
+        <div>
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter products..."
+          />
+          
+          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="">Sort by...</option>
+            <option value="name">Name</option>
+            <option value="price">Price</option>
+          </select>
+          
+          <div>Page {currentPage}</div>
+          <button onClick={() => setPage(Option.some(currentPage + 1))}>
+            Next page
+          </button>
+        </div>
+      )
+    }
+    ```
+  </Step>
+  
+  <Step title="Share URLs">
+    Users can now share URLs with state included:
+    
+    ```
+    https://example.com/products?page=2&sort=price&filter=laptop
+    ```
+  </Step>
+</Steps>
+
+## Server-side rendering
+
+When rendering on the server, `Atom.searchParam` returns safe defaults:
+
+- Without a schema: returns empty string `""`
+- With a schema: returns `Option.none()`
+
+This ensures your components render correctly during SSR:
+
+```tsx
+function SearchPage() {
+  const query = useAtomValue(searchAtom)
+  // On server: query = ""
+  // On client: query = actual search param value
+  
+  return <div>Searching for: {query || "nothing yet"}</div>
+}
+```
+
+## Implementation details
+
+### Function signature
+
+From `Atom.ts:1842-1844`:
+
+```ts
+export const searchParam = <A = never, I extends string = never>(
+  name: string,
+  options?: { readonly schema?: Schema.Schema<A, I> }
+): Writable<[A] extends [never] ? string : Option.Option<A>>
+```
+
+### How it works
+
+The `Atom.searchParam` function:
+
+1. Listens to `popstate` and `pushstate` events to detect URL changes
+2. Debounces writes to avoid creating excessive browser history entries
+3. Automatically encodes/decodes values using the provided schema
+4. Updates the URL using `window.history.pushState` to avoid page reloads
+
+<Warning>
+  The schema used with `Atom.searchParam` must be synchronous and have no
+  context requirements. Async schemas are not supported.
+</Warning>
+
+## Best practices
+
+<Steps>
+  <Step title="Keep search params simple">
+    Use search parameters for simple, serializable state like filters, pagination, and sorting.
+    Avoid storing complex objects or sensitive data.
+  </Step>
+  
+  <Step title="Provide defaults">
+    Always handle `Option.none()` cases when using schemas to ensure good UX:
+    
+    ```ts
+    const page = Option.getOrElse(pageOption, () => 1)
+    ```
+  </Step>
+  
+  <Step title="Use meaningful names">
+    Choose clear, descriptive parameter names that make sense when shared:
+    
+    ```ts
+    // Good
+    Atom.searchParam("page")
+    Atom.searchParam("sort")
+    
+    // Avoid
+    Atom.searchParam("p")
+    Atom.searchParam("s")
+    ```
+  </Step>
+</Steps>

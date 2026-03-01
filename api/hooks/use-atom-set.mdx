@@ -1,0 +1,215 @@
+---
+title: useAtomSet
+description: Write to atoms from React components with automatic mounting
+---
+
+## Overview
+
+The `useAtomSet` hook provides a setter function for writing values to an atom. Unlike `useAtom`, it only returns the setter and doesn't subscribe to value changes, making it more efficient for write-only scenarios.
+
+## Signature
+
+```typescript
+export const useAtomSet: <
+  R,
+  W,
+  Mode extends "value" | "promise" | "promiseExit" = never
+>(
+  atom: Atom.Writable<R, W>,
+  options?: {
+    readonly mode?: ([R] extends [Result.Result<any, any>] ? Mode : "value") | undefined
+  }
+) => "promise" extends Mode ? (
+    (value: W) => Promise<Result.Result.Success<R>>
+  ) :
+  "promiseExit" extends Mode ? (
+      (value: W) => Promise<Exit.Exit<Result.Result.Success<R>, Result.Result.Failure<R>>>
+    ) :
+  ((value: W | ((value: R) => W)) => void)
+```
+
+## Parameters
+
+<ParamField path="atom" type="Atom.Writable<R, W>" required>
+  A writable atom that can accept values of type `W` and stores values of type `R`.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for the setter behavior.
+  
+  <ParamField path="options.mode" type="'value' | 'promise' | 'promiseExit'">
+    Determines the return type of the setter function:
+    - `"value"` (default): Returns `void`, synchronous updates
+    - `"promise"`: Returns a promise that resolves to the result value
+    - `"promiseExit"`: Returns a promise that resolves to an `Exit` (includes failures)
+  </ParamField>
+</ParamField>
+
+## Returns
+
+<ResponseField name="setter" type="Function">
+  A memoized setter function whose signature depends on the `mode` option:
+  
+  - **Default mode**: `(value: W | ((current: R) => W)) => void` - Updates the atom synchronously
+  - **Promise mode**: `(value: W) => Promise<Result.Success<R>>` - Returns a promise of the updated value
+  - **PromiseExit mode**: `(value: W) => Promise<Exit>` - Returns a promise with the full exit status
+</ResponseField>
+
+## Usage
+
+### Basic synchronous updates
+
+Update an atom with a new value:
+
+```tsx
+import { useAtomSet } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+
+function IncrementButton() {
+  const setCount = useAtomSet(countAtom)
+  
+  return (
+    <button onClick={() => setCount(c => c + 1)}>
+      Increment
+    </button>
+  )
+}
+```
+
+### Functional updates
+
+Update based on the current value:
+
+```tsx
+import { useAtomSet } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const todosAtom = Atom.make([])
+
+function AddTodoButton() {
+  const setTodos = useAtomSet(todosAtom)
+  
+  const addTodo = () => {
+    setTodos(currentTodos => [
+      ...currentTodos,
+      { id: Date.now(), text: "New todo", completed: false }
+    ])
+  }
+  
+  return <button onClick={addTodo}>Add Todo</button>
+}
+```
+
+### Promise mode for async atoms
+
+Wait for async atoms to complete:
+
+```tsx
+import { useAtomSet } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const saveAtom = Atom.makeWithEffect(
+  (get, set, data: string) =>
+    Effect.gen(function* () {
+      yield* Effect.sleep("1 second")
+      // Save to API
+      return { success: true }
+    })
+)
+
+function SaveButton({ data }: { data: string }) {
+  const save = useAtomSet(saveAtom, { mode: "promise" })
+  
+  const handleSave = async () => {
+    try {
+      const result = await save(data)
+      console.log("Saved successfully:", result.value)
+    } catch (error) {
+      console.error("Save failed:", error)
+    }
+  }
+  
+  return <button onClick={handleSave}>Save</button>
+}
+```
+
+### PromiseExit mode for error handling
+
+Handle both success and failure cases:
+
+```tsx
+import { useAtomSet } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+import { Exit } from "effect"
+
+const submitAtom = Atom.makeWithEffect(
+  (get, set, formData: FormData) => submitToAPI(formData)
+)
+
+function SubmitForm() {
+  const submit = useAtomSet(submitAtom, { mode: "promiseExit" })
+  
+  const handleSubmit = async (formData: FormData) => {
+    const exit = await submit(formData)
+    
+    if (Exit.isSuccess(exit)) {
+      console.log("Success:", exit.value)
+    } else {
+      console.error("Failure:", exit.cause)
+    }
+  }
+  
+  return <form onSubmit={(e) => {
+    e.preventDefault()
+    handleSubmit(new FormData(e.currentTarget))
+  }}>
+    {/* form fields */}
+  </form>
+}
+```
+
+### Write-only form controls
+
+Components that only update state:
+
+```tsx
+import { useAtomSet } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const searchQueryAtom = Atom.make("")
+
+function SearchInput() {
+  const setQuery = useAtomSet(searchQueryAtom)
+  
+  return (
+    <input
+      type="text"
+      placeholder="Search..."
+      onChange={(e) => setQuery(e.target.value)}
+    />
+  )
+}
+```
+
+## Best practices
+
+<Note>
+  The setter function is memoized and remains stable across re-renders. You can safely pass it to child components or use it in dependency arrays.
+</Note>
+
+<Note>
+  Use `useAtomSet` instead of `useAtom` when you only need to write to an atom. This prevents unnecessary re-renders when the atom value changes.
+</Note>
+
+<Warning>
+  When using `mode: "promise"`, failures are thrown as exceptions. Use try-catch or switch to `mode: "promiseExit"` for explicit error handling.
+</Warning>
+
+## Related hooks
+
+- [useAtom](/api/hooks/use-atom) - Read and write atom values
+- [useAtomValue](/api/hooks/use-atom-value) - Read-only access to atoms
+- [useAtomSuspense](/api/hooks/use-atom-suspense) - Read async atoms with Suspense

@@ -1,0 +1,530 @@
+---
+title: AtomRef
+description: Complete API reference for the AtomRef module - reactive references with subscription support
+---
+
+The `AtomRef` module provides reactive references that support subscriptions and transformations. Unlike atoms, AtomRefs are simpler value containers optimized for local state management.
+
+## Type definitions
+
+### ReadonlyRef
+
+```typescript
+interface ReadonlyRef<A> extends Equal.Equal {
+  readonly [TypeId]: TypeId
+  readonly key: string
+  readonly value: A
+  readonly subscribe: (f: (a: A) => void) => () => void
+  readonly map: <B>(f: (a: A) => B) => ReadonlyRef<B>
+}
+```
+
+A read-only reference that can be observed for changes.
+
+### AtomRef
+
+```typescript
+interface AtomRef<A> extends ReadonlyRef<A> {
+  readonly prop: <K extends keyof A>(prop: K) => AtomRef<A[K]>
+  readonly set: (value: A) => AtomRef<A>
+  readonly update: (f: (value: A) => A) => AtomRef<A>
+}
+```
+
+A mutable reference that can be read, written, and observed.
+
+### Collection
+
+```typescript
+interface Collection<A> extends ReadonlyRef<ReadonlyArray<AtomRef<A>>> {
+  readonly push: (item: A) => Collection<A>
+  readonly insertAt: (index: number, item: A) => Collection<A>
+  readonly remove: (ref: AtomRef<A>) => Collection<A>
+  readonly toArray: () => Array<A>
+}
+```
+
+A collection of AtomRefs with array-like operations.
+
+## Creation
+
+### make
+
+Create a new AtomRef.
+
+```typescript
+const make: <A>(value: A) => AtomRef<A>
+```
+
+<ParamField path="value" type="A">
+  The initial value
+</ParamField>
+
+**Example**
+
+```typescript
+import { AtomRef } from "@effect-rx/rx"
+
+const nameRef = AtomRef.make("Alice")
+console.log(nameRef.value) // "Alice"
+```
+
+**Example - With object**
+
+```typescript
+const userRef = AtomRef.make({
+  id: 1,
+  name: "Alice",
+  email: "alice@example.com"
+})
+```
+
+### collection
+
+Create a collection of AtomRefs.
+
+```typescript
+const collection: <A>(items: Iterable<A>) => Collection<A>
+```
+
+<ParamField path="items" type="Iterable<A>">
+  Initial items for the collection
+</ParamField>
+
+**Example**
+
+```typescript
+const todosRef = AtomRef.collection([
+  { id: 1, text: "Buy milk", done: false },
+  { id: 2, text: "Walk dog", done: true }
+])
+
+console.log(todosRef.value.length) // 2
+```
+
+## Reading values
+
+### value
+
+Access the current value.
+
+```typescript
+ref.value: A
+```
+
+**Example**
+
+```typescript
+const countRef = AtomRef.make(42)
+console.log(countRef.value) // 42
+```
+
+<Note>
+  The `value` property is a getter that always returns the current value.
+</Note>
+
+## Writing values
+
+### set
+
+Set a new value.
+
+```typescript
+ref.set(value: A): AtomRef<A>
+```
+
+<ParamField path="value" type="A">
+  The new value
+</ParamField>
+
+**Returns** the same ref for chaining.
+
+**Example**
+
+```typescript
+const countRef = AtomRef.make(0)
+countRef.set(42)
+console.log(countRef.value) // 42
+```
+
+<Note>
+  Setting a value that equals the current value (using `Equal.equals`) will not notify subscribers.
+</Note>
+
+### update
+
+Update the value based on its current value.
+
+```typescript
+ref.update(f: (value: A) => A): AtomRef<A>
+```
+
+<ParamField path="f" type="(value: A) => A">
+  Function to compute the new value from the current value
+</ParamField>
+
+**Returns** the same ref for chaining.
+
+**Example**
+
+```typescript
+const countRef = AtomRef.make(0)
+countRef.update((n) => n + 1)
+console.log(countRef.value) // 1
+```
+
+## Subscriptions
+
+### subscribe
+
+Subscribe to value changes.
+
+```typescript
+ref.subscribe(f: (a: A) => void): () => void
+```
+
+<ParamField path="f" type="(a: A) => void">
+  Callback function called when the value changes
+</ParamField>
+
+**Returns** a cleanup function to unsubscribe.
+
+**Example**
+
+```typescript
+const countRef = AtomRef.make(0)
+
+const unsubscribe = countRef.subscribe((count) => {
+  console.log("Count changed:", count)
+})
+
+countRef.set(1) // Logs: "Count changed: 1"
+countRef.set(2) // Logs: "Count changed: 2"
+
+unsubscribe() // Stop listening
+```
+
+<Note>
+  Unlike Registry subscriptions, AtomRef subscriptions do not have an `immediate` option. They only notify on changes.
+</Note>
+
+## Transformations
+
+### map
+
+Create a derived ref by mapping the value.
+
+```typescript
+ref.map<B>(f: (a: A) => B): ReadonlyRef<B>
+```
+
+<ParamField path="f" type="(a: A) => B">
+  Transform function
+</ParamField>
+
+**Returns** a read-only ref with the transformed value.
+
+**Example**
+
+```typescript
+const countRef = AtomRef.make(5)
+const doubledRef = countRef.map((n) => n * 2)
+
+console.log(doubledRef.value) // 10
+
+countRef.set(10)
+console.log(doubledRef.value) // 20
+```
+
+**Example - Subscribe to mapped ref**
+
+```typescript
+const userRef = AtomRef.make({ name: "Alice", age: 30 })
+const nameRef = userRef.map((user) => user.name)
+
+nameRef.subscribe((name) => {
+  console.log("Name:", name)
+})
+
+userRef.set({ name: "Bob", age: 30 })
+// Logs: "Name: Bob"
+```
+
+<Note>
+  Mapped refs only notify subscribers when the transformed value changes (using `Equal.equals`).
+</Note>
+
+### prop
+
+Create a ref focused on a specific property.
+
+```typescript
+ref.prop<K extends keyof A>(prop: K): AtomRef<A[K]>
+```
+
+<ParamField path="prop" type="K">
+  The property key to focus on
+</ParamField>
+
+**Returns** a writable ref for that property.
+
+**Example**
+
+```typescript
+const userRef = AtomRef.make({
+  name: "Alice",
+  email: "alice@example.com"
+})
+
+const nameRef = userRef.prop("name")
+console.log(nameRef.value) // "Alice"
+
+nameRef.set("Bob")
+console.log(userRef.value)
+// { name: "Bob", email: "alice@example.com" }
+```
+
+**Example - Nested properties**
+
+```typescript
+const appRef = AtomRef.make({
+  user: {
+    profile: {
+      name: "Alice"
+    }
+  }
+})
+
+const nameRef = appRef
+  .prop("user")
+  .prop("profile")
+  .prop("name")
+
+nameRef.set("Bob")
+```
+
+## Collection operations
+
+### push
+
+Add an item to the end of the collection.
+
+```typescript
+collection.push(item: A): Collection<A>
+```
+
+<ParamField path="item" type="A">
+  The item to add
+</ParamField>
+
+**Example**
+
+```typescript
+const todosRef = AtomRef.collection([])
+
+todosRef.push({ id: 1, text: "Buy milk", done: false })
+todosRef.push({ id: 2, text: "Walk dog", done: false })
+
+console.log(todosRef.value.length) // 2
+```
+
+### insertAt
+
+Insert an item at a specific index.
+
+```typescript
+collection.insertAt(index: number, item: A): Collection<A>
+```
+
+<ParamField path="index" type="number">
+  The index to insert at
+</ParamField>
+
+<ParamField path="item" type="A">
+  The item to insert
+</ParamField>
+
+**Example**
+
+```typescript
+const todosRef = AtomRef.collection([
+  { id: 1, text: "First", done: false },
+  { id: 3, text: "Third", done: false }
+])
+
+todosRef.insertAt(1, { id: 2, text: "Second", done: false })
+// Collection is now: [First, Second, Third]
+```
+
+### remove
+
+Remove an item by reference.
+
+```typescript
+collection.remove(ref: AtomRef<A>): Collection<A>
+```
+
+<ParamField path="ref" type="AtomRef<A>">
+  The ref to remove
+</ParamField>
+
+**Example**
+
+```typescript
+const todosRef = AtomRef.collection([
+  { id: 1, text: "Buy milk", done: false },
+  { id: 2, text: "Walk dog", done: false }
+])
+
+const firstTodo = todosRef.value[0]
+todosRef.remove(firstTodo)
+
+console.log(todosRef.value.length) // 1
+```
+
+### toArray
+
+Get the collection items as a plain array.
+
+```typescript
+collection.toArray(): Array<A>
+```
+
+**Example**
+
+```typescript
+const todosRef = AtomRef.collection([
+  { id: 1, text: "Buy milk", done: false },
+  { id: 2, text: "Walk dog", done: true }
+])
+
+const todos = todosRef.toArray()
+console.log(todos)
+// [{ id: 1, ... }, { id: 2, ... }]
+```
+
+## Collection subscriptions
+
+**Example - Subscribe to collection changes**
+
+```typescript
+const todosRef = AtomRef.collection([])
+
+todosRef.subscribe((refs) => {
+  console.log("Todos count:", refs.length)
+})
+
+todosRef.push({ id: 1, text: "Buy milk", done: false })
+// Logs: "Todos count: 1"
+```
+
+**Example - Subscribe to individual items**
+
+```typescript
+const todosRef = AtomRef.collection([
+  { id: 1, text: "Buy milk", done: false }
+])
+
+const firstTodo = todosRef.value[0]
+
+firstTodo.subscribe((todo) => {
+  console.log("Todo changed:", todo)
+})
+
+firstTodo.set({ id: 1, text: "Buy milk", done: true })
+// Logs: "Todo changed: { id: 1, text: 'Buy milk', done: true }"
+// Also triggers collection subscriber
+```
+
+<Note>
+  When an item in a collection changes, both the item's subscribers and the collection's subscribers are notified.
+</Note>
+
+## Equality
+
+AtomRefs implement Effect's `Equal` interface using the value's equality.
+
+**Example**
+
+```typescript
+import { Equal } from "effect"
+
+const ref1 = AtomRef.make({ id: 1, name: "Alice" })
+const ref2 = AtomRef.make({ id: 1, name: "Alice" })
+
+Equal.equals(ref1, ref2) // true (values are equal)
+
+ref1.set({ id: 2, name: "Bob" })
+Equal.equals(ref1, ref2) // false (values differ)
+```
+
+## Use cases
+
+### Form state
+
+```typescript
+const formRef = AtomRef.make({
+  email: "",
+  password: "",
+  rememberMe: false
+})
+
+const emailRef = formRef.prop("email")
+const passwordRef = formRef.prop("password")
+
+// In a component
+emailRef.set("user@example.com")
+passwordRef.set("secret")
+
+console.log(formRef.value)
+// { email: "user@example.com", password: "secret", rememberMe: false }
+```
+
+### Todo list
+
+```typescript
+interface Todo {
+  id: number
+  text: string
+  done: boolean
+}
+
+const todosRef = AtomRef.collection<Todo>([])
+
+function addTodo(text: string) {
+  todosRef.push({
+    id: Date.now(),
+    text,
+    done: false
+  })
+}
+
+function toggleTodo(todoRef: AtomRef<Todo>) {
+  todoRef.update((todo) => ({
+    ...todo,
+    done: !todo.done
+  }))
+}
+
+function removeTodo(todoRef: AtomRef<Todo>) {
+  todosRef.remove(todoRef)
+}
+```
+
+### Counter with history
+
+```typescript
+const countRef = AtomRef.make(0)
+const historyRef = AtomRef.collection<number>([])
+
+countRef.subscribe((count) => {
+  historyRef.push(count)
+})
+
+countRef.set(1)
+countRef.set(2)
+countRef.set(3)
+
+console.log(historyRef.toArray())
+// [1, 2, 3]
+```

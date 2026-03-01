@@ -1,0 +1,430 @@
+---
+title: HTTP API integration
+description: Integrate @effect/platform HttpApi with AtomHttpApi for REST APIs
+---
+
+## Overview
+
+The `AtomHttpApi` module provides seamless integration between Effect Atom and `@effect/platform`'s `HttpApi`, enabling type-safe HTTP API calls with built-in state management and reactivity.
+
+## Creating an HTTP API client
+
+Use `AtomHttpApi.Tag` to create a special `Context.Tag` that builds an HTTP API client with atom integration:
+
+```ts
+import { AtomHttpApi } from "@effect-atom/atom-react"
+import {
+  FetchHttpClient,
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup
+} from "@effect/platform"
+import { Schema } from "effect"
+
+// Define your API
+class Api extends HttpApi.make("api").add(
+  HttpApiGroup.make("counter").add(
+    HttpApiEndpoint.get("count", "/count")
+      .addSuccess(Schema.Number)
+  ).add(
+    HttpApiEndpoint.post("increment", "/increment")
+  )
+) {}
+
+// Create the HTTP API client tag
+class CountClient extends AtomHttpApi.Tag<CountClient>()("CountClient", {
+  api: Api,
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000"
+}) {}
+```
+
+## Type signature
+
+```ts
+interface AtomHttpApiClient<Self, Id extends string, Groups extends HttpApiGroup.HttpApiGroup.Any, ApiE, E> {
+  // The layer for providing the client
+  readonly layer: Layer.Layer<Self, E>
+  
+  // Runtime for creating atoms
+  readonly runtime: Atom.AtomRuntime<Self, E>
+  
+  // Create mutations (write operations)
+  readonly mutation: <
+    GroupName extends HttpApiGroup.HttpApiGroup.Name<Groups>,
+    Name extends HttpApiEndpoint.HttpApiEndpoint.Name<Endpoints>,
+    WithResponse extends boolean = false
+  >(
+    group: GroupName,
+    endpoint: Name,
+    options?: { readonly withResponse?: WithResponse }
+  ) => Atom.AtomResultFn<Request, Success | [Success, HttpClientResponse], Error>
+  
+  // Create queries (read operations)
+  readonly query: <
+    GroupName extends HttpApiGroup.HttpApiGroup.Name<Groups>,
+    Name extends HttpApiEndpoint.HttpApiEndpoint.Name<Endpoints>,
+    WithResponse extends boolean = false
+  >(
+    group: GroupName,
+    endpoint: Name,
+    request: Request & {
+      readonly reactivityKeys?: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+      readonly timeToLive?: Duration.DurationInput
+    }
+  ) => Atom.Atom<Result.Result<Success | [Success, HttpClientResponse], Error>>
+}
+```
+
+## Queries
+
+Queries are read-only operations that automatically cache and manage their state:
+
+<CodeGroup>
+
+```tsx React component
+import { Result, useAtomValue } from "@effect-atom/atom-react"
+
+function CountDisplay() {
+  const count = useAtomValue(
+    CountClient.query("counter", "count", {
+      // Optional: Add reactivity keys for cache invalidation
+      reactivityKeys: ["count"],
+      // Optional: Set time-to-live for caching
+      timeToLive: "5 minutes"
+    })
+  )
+
+  return (
+    <div>
+      Count: {Result.getOrElse(count, () => 0)}
+    </div>
+  )
+}
+```
+
+```ts Standalone atom
+const countAtom = CountClient.query("counter", "count", {
+  reactivityKeys: ["count"]
+})
+
+// Use in your atom logic
+const derivedAtom = Atom.make((get) => {
+  const count = Result.getOrElse(get(countAtom), () => 0)
+  return count * 2
+})
+```
+
+</CodeGroup>
+
+### Query with request parameters
+
+Pass path parameters, URL params, headers, and payload:
+
+```ts
+class Api extends HttpApi.make("api").add(
+  HttpApiGroup.make("users").add(
+    HttpApiEndpoint.get("getUser", "/users/:id")
+      .addSuccess(Schema.Struct({
+        id: Schema.String,
+        name: Schema.String
+      }))
+  )
+) {}
+
+class UserClient extends AtomHttpApi.Tag<UserClient>()("UserClient", {
+  api: Api,
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000"
+}) {}
+
+// Use with path parameters
+const userAtom = UserClient.query("users", "getUser", {
+  path: { id: "123" },
+  reactivityKeys: ["user", "123"]
+})
+```
+
+### Query options
+
+- **`reactivityKeys`**: Array of keys used for cache invalidation when mutations occur
+- **`timeToLive`**: Duration to cache the query result. Use `"Infinity"` to cache forever
+- **`headers`**: Custom HTTP headers to include in the request
+- **`path`**: Path parameters for the endpoint
+- **`urlParams`**: Query string parameters
+- **`payload`**: Request body
+- **`withResponse`**: Include the full HTTP response along with the parsed body
+
+## Mutations
+
+Mutations are write operations that can invalidate query caches:
+
+<CodeGroup>
+
+```tsx React component
+import { useAtomSet } from "@effect-atom/atom-react"
+
+function IncrementButton() {
+  const increment = useAtomSet(CountClient.mutation("counter", "increment"))
+
+  return (
+    <button
+      onClick={() =>
+        increment({
+          payload: void 0,
+          // Invalidate count queries when mutation completes
+          reactivityKeys: ["count"]
+        })
+      }
+    >
+      Increment
+    </button>
+  )
+}
+```
+
+```tsx With request body
+import { Schema } from "effect"
+
+class Api extends HttpApi.make("api").add(
+  HttpApiGroup.make("users").add(
+    HttpApiEndpoint.post("createUser", "/users")
+      .addPayload(Schema.Struct({
+        name: Schema.String,
+        email: Schema.String
+      }))
+      .addSuccess(Schema.Struct({
+        id: Schema.String,
+        name: Schema.String,
+        email: Schema.String
+      }))
+  )
+) {}
+
+function CreateUserForm() {
+  const createUser = useAtomSet(
+    UserClient.mutation("users", "createUser"),
+    { mode: "promiseExit" }
+  )
+
+  return (
+    <button
+      onClick={async () => {
+        const exit = await createUser({
+          payload: {
+            name: "Alice",
+            email: "alice@example.com"
+          },
+          reactivityKeys: ["users"]
+        })
+        
+        if (Exit.isSuccess(exit)) {
+          console.log("User created:", exit.value)
+        }
+      }}
+    >
+      Create user
+    </button>
+  )
+}
+```
+
+</CodeGroup>
+
+## Getting the full response
+
+Set `withResponse: true` to receive both the parsed body and the HTTP response:
+
+```ts
+const userWithResponse = CountClient.query("users", "getUser", {
+  path: { id: "123" },
+  withResponse: true
+})
+
+// Type: Result.Result<[User, HttpClientResponse], Error>
+
+function UserWithHeaders() {
+  const result = useAtomValue(userWithResponse)
+  
+  return Result.builder(result)
+    .onSuccess(([user, response]) => (
+      <div>
+        <p>User: {user.name}</p>
+        <p>ETag: {response.headers["etag"]}</p>
+      </div>
+    ))
+    .render()
+}
+```
+
+## Custom atoms
+
+You can create custom atoms using the `CountClient.runtime`:
+
+```ts
+import { Effect } from "effect"
+
+const incrementAtom = CountClient.runtime.fn(
+  Effect.fnUntraced(function*() {
+    const client = yield* CountClient
+    yield* client.counter.increment()
+  })
+)
+
+const countAtom = CountClient.runtime.atom(
+  Effect.gen(function*() {
+    const client = yield* CountClient
+    return yield* client.counter.count()
+  })
+)
+```
+
+## Using in Effect services
+
+Integrate the HTTP API client directly into your Effect services:
+
+```ts
+class MyService extends Effect.Service<MyService>()("MyService", {
+  dependencies: [CountClient.layer],
+  scoped: Effect.gen(function*() {
+    const client = yield* CountClient
+    
+    const increment = () => client.counter.increment()
+    const getCount = () => client.counter.count()
+    
+    return { increment, getCount } as const
+  })
+}) {}
+```
+
+## Reactivity keys
+
+Reactivity keys enable automatic cache invalidation:
+
+<Steps>
+
+### Define keys on queries
+
+```ts
+const userAtom = CountClient.query("users", "getUser", {
+  path: { id: "1" },
+  reactivityKeys: ["user", "1"]
+})
+```
+
+### Invalidate from mutations
+
+```ts
+const updateUser = CountClient.mutation("users", "updateUser")
+
+setUpdateUser({
+  path: { id: "1" },
+  payload: { name: "Alice" },
+  reactivityKeys: ["user", "1"]
+})
+```
+
+### Automatic cache updates
+
+When the mutation completes, all queries with matching reactivity keys are automatically refreshed.
+
+</Steps>
+
+## Advanced patterns
+
+### Parameterized queries
+
+Use `Atom.family` to create parameterized query atoms:
+
+```ts
+const userAtom = Atom.family((id: string) =>
+  UserClient.query("users", "getUser", {
+    path: { id },
+    reactivityKeys: ["user", id]
+  })
+)
+
+// Usage
+function UserProfile({ id }: { id: string }) {
+  const user = useAtomValue(userAtom(id))
+  // ...
+}
+```
+
+### Client transformation
+
+Customize the HTTP client before requests:
+
+```ts
+class AuthClient extends AtomHttpApi.Tag<AuthClient>()("AuthClient", {
+  api: Api,
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000",
+  transformClient: (client) =>
+    client.pipe(
+      HttpClient.mapRequest(
+        HttpClientRequest.bearerToken("my-auth-token")
+      )
+    )
+}) {}
+```
+
+### Response transformation
+
+Transform responses before they reach atoms:
+
+```ts
+class LoggingClient extends AtomHttpApi.Tag<LoggingClient>()("LoggingClient", {
+  api: Api,
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000",
+  transformResponse: (effect) =>
+    effect.pipe(
+      Effect.tap((response) => Effect.log("Response:", response))
+    )
+}) {}
+```
+
+## Error handling
+
+All HTTP calls return a `Result` type that captures success, failure, and loading states:
+
+```tsx
+function UserProfile({ id }: { id: string }) {
+  const user = useAtomValue(
+    UserClient.query("users", "getUser", {
+      path: { id }
+    })
+  )
+  
+  return Result.builder(user)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => {
+      if (cause._tag === "HttpClientError") {
+        return <div>HTTP Error: {cause.status}</div>
+      }
+      return <div>Error: {Cause.pretty(cause)}</div>
+    })
+    .onSuccess((user) => (
+      <div>
+        <h1>{user.name}</h1>
+        <p>{user.email}</p>
+      </div>
+    ))
+    .render()
+}
+```
+
+## Comparison with AtomRpc
+
+<Note>
+Use `AtomHttpApi` for REST APIs and traditional HTTP endpoints. Use `AtomRpc` for RPC-style APIs with custom protocols (WebSocket, SSE, etc.).
+</Note>
+
+| Feature | AtomHttpApi | AtomRpc |
+|---------|-------------|----------|
+| Protocol | HTTP/REST | WebSocket, SSE, HTTP |
+| API style | RESTful endpoints | RPC methods |
+| Streaming | Not supported | Built-in support |
+| Type safety | Full | Full |
+| Best for | Traditional REST APIs | Real-time, bidirectional APIs |

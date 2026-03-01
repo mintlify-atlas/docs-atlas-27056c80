@@ -1,0 +1,329 @@
+---
+title: RPC integration
+description: Integrate @effect/rpc with AtomRpc for type-safe RPC calls
+---
+
+## Overview
+
+The `AtomRpc` module provides seamless integration between Effect Atom and `@effect/rpc`, enabling type-safe RPC calls with built-in state management and reactivity.
+
+## Creating an RPC client
+
+Use `AtomRpc.Tag` to create a special `Context.Tag` that builds an RPC client with atom integration:
+
+```ts
+import { AtomRpc } from "@effect-atom/atom-react"
+import { BrowserSocket } from "@effect/platform-browser"
+import { Rpc, RpcClient, RpcGroup, RpcSerialization } from "@effect/rpc"
+import { Effect, Layer, Schema } from "effect"
+
+// Define your RPC methods
+class Rpcs extends RpcGroup.make(
+  Rpc.make("increment"),
+  Rpc.make("count", {
+    success: Schema.Number
+  })
+) {}
+
+// Create the RPC client tag
+class CountClient extends AtomRpc.Tag<CountClient>()("CountClient", {
+  group: Rpcs,
+  protocol: RpcClient.layerProtocolSocket({
+    retryTransientErrors: true
+  }).pipe(
+    Layer.provide(BrowserSocket.layerWebSocket("ws://localhost:3000/rpc")),
+    Layer.provide(RpcSerialization.layerJson)
+  )
+}) {}
+```
+
+## Type signature
+
+```ts
+interface AtomRpcClient<Self, Id extends string, Rpcs extends Rpc.Any, E> {
+  // The layer for providing the client
+  readonly layer: Layer.Layer<Self, E>
+  
+  // Runtime for creating atoms
+  readonly runtime: Atom.AtomRuntime<Self, E>
+  
+  // Create mutations (write operations)
+  readonly mutation: <Tag extends Rpc.Tag<Rpcs>>(
+    tag: Tag
+  ) => Atom.AtomResultFn<
+    {
+      readonly payload: Rpc.PayloadConstructor<Rpc.ExtractTag<Rpcs, Tag>>
+      readonly reactivityKeys?: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+      readonly headers?: Headers.Input
+    },
+    Success,
+    Error
+  >
+  
+  // Create queries (read operations)
+  readonly query: <Tag extends Rpc.Tag<Rpcs>>(
+    tag: Tag,
+    payload: Rpc.PayloadConstructor<Rpc.ExtractTag<Rpcs, Tag>>,
+    options?: {
+      readonly headers?: Headers.Input
+      readonly reactivityKeys?: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+      readonly timeToLive?: Duration.DurationInput
+    }
+  ) => Atom.Atom<Result.Result<Success, Error>>
+}
+```
+
+## Queries
+
+Queries are read-only operations that automatically cache and manage their state:
+
+<CodeGroup>
+
+```tsx React component
+import { Result, useAtomValue } from "@effect-atom/atom-react"
+
+function CountDisplay() {
+  const count = useAtomValue(CountClient.query("count", void 0, {
+    // Optional: Add reactivity keys for cache invalidation
+    reactivityKeys: ["count"],
+    // Optional: Set time-to-live for caching
+    timeToLive: "5 minutes"
+  }))
+
+  return (
+    <div>
+      Count: {Result.getOrElse(count, () => 0)}
+    </div>
+  )
+}
+```
+
+```ts Standalone atom
+const countAtom = CountClient.query("count", void 0, {
+  reactivityKeys: ["count"]
+})
+
+// Use in your atom logic
+const derivedAtom = Atom.make((get) => {
+  const count = Result.getOrElse(get(countAtom), () => 0)
+  return count * 2
+})
+```
+
+</CodeGroup>
+
+### Query options
+
+- **`reactivityKeys`**: Array of keys used for cache invalidation when mutations occur
+- **`timeToLive`**: Duration to cache the query result. Use `"Infinity"` to cache forever
+- **`headers`**: Custom HTTP headers to include in the request
+
+## Mutations
+
+Mutations are write operations that can invalidate query caches:
+
+<CodeGroup>
+
+```tsx React component
+import { useAtomSet } from "@effect-atom/atom-react"
+
+function IncrementButton() {
+  const increment = useAtomSet(CountClient.mutation("increment"))
+
+  return (
+    <button
+      onClick={() =>
+        increment({
+          payload: void 0,
+          // Invalidate count queries when mutation completes
+          reactivityKeys: ["count"]
+        })
+      }
+    >
+      Increment
+    </button>
+  )
+}
+```
+
+```tsx With promise handling
+function IncrementButton() {
+  const increment = useAtomSet(CountClient.mutation("increment"), {
+    mode: "promiseExit"
+  })
+
+  return (
+    <button
+      onClick={async () => {
+        const exit = await increment({
+          payload: void 0,
+          reactivityKeys: ["count"]
+        })
+        
+        if (Exit.isSuccess(exit)) {
+          console.log("Incremented successfully")
+        }
+      }}
+    >
+      Increment
+    </button>
+  )
+}
+```
+
+</CodeGroup>
+
+## Custom atoms
+
+You can create custom atoms using the `CountClient.runtime`:
+
+```ts
+import { Effect } from "effect"
+
+const incrementAtom = CountClient.runtime.fn(
+  Effect.fnUntraced(function*() {
+    const client = yield* CountClient
+    yield* client("increment", void 0)
+  })
+)
+
+const countAtom = CountClient.runtime.atom(
+  Effect.gen(function*() {
+    const client = yield* CountClient
+    return yield* client("count", void 0)
+  })
+)
+```
+
+## Using in Effect services
+
+Integrate the RPC client directly into your Effect services:
+
+```ts
+class MyService extends Effect.Service<MyService>()("MyService", {
+  dependencies: [CountClient.layer],
+  scoped: Effect.gen(function*() {
+    const client = yield* CountClient
+    
+    const increment = () => client("increment", void 0)
+    const getCount = () => client("count", void 0)
+    
+    return { increment, getCount } as const
+  })
+}) {}
+```
+
+## Streaming RPCs
+
+<Note>
+AtomRpc automatically detects streaming RPCs and returns a `Writable<PullResult<A, E>, void>` atom that allows you to pull values one chunk at a time.
+</Note>
+
+```ts
+class Rpcs extends RpcGroup.make(
+  Rpc.make("events", {
+    success: RpcSchema.stream(Schema.String)
+  })
+) {}
+
+// This returns a pull atom
+const eventsAtom = CountClient.query("events", void 0)
+
+function EventsList() {
+  const [result, pull] = useAtom(eventsAtom)
+  
+  return Result.builder(result)
+    .onSuccess(({ items, done }) => (
+      <div>
+        {items.map((event, i) => <div key={i}>{event}</div>)}
+        {!done && <button onClick={() => pull()}>Load more</button>}
+      </div>
+    ))
+    .render()
+}
+```
+
+## Reactivity keys
+
+Reactivity keys enable automatic cache invalidation:
+
+<Steps>
+
+### Define keys on queries
+
+```ts
+const userAtom = CountClient.query("getUser", { id: 1 }, {
+  reactivityKeys: ["user", 1]
+})
+```
+
+### Invalidate from mutations
+
+```ts
+const updateUser = CountClient.mutation("updateUser")
+
+setUpdateUser({
+  payload: { id: 1, name: "Alice" },
+  reactivityKeys: ["user", 1]
+})
+```
+
+### Automatic cache updates
+
+When the mutation completes, all queries with matching reactivity keys are automatically refreshed.
+
+</Steps>
+
+## Advanced patterns
+
+### Parameterized queries
+
+Use `Atom.family` to create parameterized query atoms:
+
+```ts
+const userAtom = Atom.family((id: string) =>
+  CountClient.query("getUser", { id }, {
+    reactivityKeys: ["user", id]
+  })
+)
+
+// Usage
+function UserProfile({ id }: { id: string }) {
+  const user = useAtomValue(userAtom(id))
+  // ...
+}
+```
+
+### Optimistic updates
+
+Combine with `Atom.optimistic` for instant UI updates:
+
+```ts
+const countAtom = CountClient.query("count", void 0)
+const optimisticCount = countAtom.pipe(Atom.optimistic)
+
+const incrementFn = optimisticCount.pipe(
+  Atom.optimisticFn({
+    reducer: (current, _update) => Result.success(
+      Result.getOrElse(current, () => 0) + 1
+    ),
+    fn: CountClient.mutation("increment")
+  })
+)
+```
+
+## Error handling
+
+All RPC calls return a `Result` type that captures success, failure, and loading states:
+
+```tsx
+function CountDisplay() {
+  const count = useAtomValue(CountClient.query("count", void 0))
+  
+  return Result.builder(count)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess((value) => <div>Count: {value}</div>)
+    .render()
+}
+```

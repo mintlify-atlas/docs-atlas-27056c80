@@ -1,0 +1,404 @@
+---
+title: Effects
+description: Learn how to work with Effect in atoms, create async atoms, handle side effects, and manage dependencies
+---
+
+## Working with effects in atoms
+
+Effect Atom is built on top of the [Effect](https://effect.website) library, providing first-class support for effectful computations. You can create atoms that execute effects, and the library handles async execution, error handling, and resource management automatically.
+
+## Creating effect-based atoms
+
+### Basic effect atoms
+
+Pass an `Effect` directly to `Atom.make`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+// Type: Atom<Result.Result<{ id: number; name: string }, never>>
+```
+
+Effect atoms return a `Result` type that represents the async state:
+- `Initial` - Effect hasn't started or no initial value
+- `Success` - Effect completed successfully
+- `Failure` - Effect failed
+- `waiting: true` - Effect is currently running
+
+### Effect with initial value
+
+Provide a value to display while the effect runs:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const dataAtom = Atom.make(
+  Effect.succeed("loaded").pipe(Effect.delay(1000)),
+  { initialValue: "loading..." }
+)
+// Type: Atom<Result.Result<string, never>>
+
+// Immediately available value: "loading..."
+// After 1 second: "loaded"
+```
+
+### Effect with get context
+
+Access other atoms within effects:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userIdAtom = Atom.make(1)
+
+const userAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    const userId = get(userIdAtom)
+    const response = yield* Effect.tryPromise(() =>
+      fetch(`/api/users/${userId}`)
+    )
+    return yield* Effect.tryPromise(() => response.json())
+  })
+)
+```
+
+When `userIdAtom` changes, the effect automatically re-runs with the new value.
+
+## Reading Result atoms
+
+### Using get.result
+
+The `get.result` method converts a `Result` atom into an `Effect`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+
+const greetingAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    // Unwrap the Result into an Effect
+    const user = yield* get.result(userAtom)
+    return `Hello, ${user.name}!`
+  })
+)
+```
+
+<Note>
+  `get.result` will:
+  - Suspend (wait) if the source atom is in a waiting state
+  - Fail if the source atom has an error
+  - Succeed with the value if the source atom is successful
+</Note>
+
+### Controlling suspension behavior
+
+Control whether to suspend on waiting states:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+
+const greetingAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    // Don't suspend - fail immediately if waiting
+    const user = yield* get.result(userAtom, {
+      suspendOnWaiting: false
+    })
+    return `Hello, ${user.name}!`
+  })
+)
+```
+
+## Streams in atoms
+
+Atoms can work with Effect streams, automatically subscribing to values:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Stream, Schedule } from "effect"
+
+const tickAtom = Atom.make(
+  Stream.fromSchedule(Schedule.spaced(1000))
+)
+// Type: Atom<Result.Result<number, never>>
+
+// Updates every second with incrementing number
+```
+
+### Stream behavior
+
+When you pass a Stream to `Atom.make`:
+- The atom's value is the **latest** emitted value
+- The `waiting` flag is `true` while the stream is active
+- When the stream completes, `waiting` becomes `false`
+- If the stream is empty, the atom fails with `NoSuchElementException`
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Stream, Effect } from "effect"
+
+const dataStreamAtom = Atom.make(
+  Stream.make(1, 2, 3).pipe(
+    Stream.tap((n) => Effect.log(`Emitted: ${n}`)),
+    Stream.schedule(Schedule.spaced(100))
+  ),
+  { initialValue: 0 }
+)
+
+// Initial: 0
+// After 100ms: 1 (waiting: true)
+// After 200ms: 2 (waiting: true)  
+// After 300ms: 3 (waiting: false) - stream completed
+```
+
+## Effect services and layers
+
+Integrate with Effect's dependency injection system:
+
+### Creating a runtime atom
+
+Use `Atom.runtime` to create an atom runtime from a Layer:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Context, Layer } from "effect"
+
+class Users extends Context.Tag("Users")<
+  Users,
+  {
+    readonly getAll: Effect.Effect<Array<User>>
+    readonly getById: (id: number) => Effect.Effect<User>
+  }
+>() {}
+
+const UsersLive = Layer.succeed(Users, {
+  getAll: Effect.succeed([]),
+  getById: (id) => Effect.succeed({ id, name: "User" })
+})
+
+const runtime = Atom.runtime(UsersLive)
+// Type: AtomRuntime<Users>
+```
+
+### Using services in atoms
+
+Access services in atoms created from the runtime:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const usersAtom = runtime.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAll
+  })
+)
+// Type: Atom<Result.Result<Array<User>, never>>
+
+const userIdAtom = Atom.make(1)
+
+const userAtom = runtime.atom((get) =>
+  Effect.gen(function* () {
+    const userId = get(userIdAtom)
+    const users = yield* Users
+    return yield* users.getById(userId)
+  })
+)
+```
+
+### Global layers
+
+Add layers that apply to all runtime atoms:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Layer, Logger } from "effect"
+
+// Apply to all atoms created from any runtime
+Atom.runtime.addGlobalLayer(
+  Layer.setConfigProvider(ConfigProvider.fromJson(import.meta.env))
+)
+
+Atom.runtime.addGlobalLayer(
+  Logger.replace(Logger.defaultLogger, myCustomLogger)
+)
+```
+
+## Error handling
+
+Effect atoms automatically capture errors in the `Result` type:
+
+```typescript
+import { Atom, Result } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const riskyAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () => fetch("/api/data"),
+      catch: (error) => new FetchError({ error })
+    })
+    
+    if (!response.ok) {
+      yield* Effect.fail(new HttpError({ status: response.status }))
+    }
+    
+    return yield* Effect.tryPromise({
+      try: () => response.json(),
+      catch: (error) => new ParseError({ error })
+    })
+  })
+)
+// Type: Atom<Result.Result<Data, FetchError | HttpError | ParseError>>
+
+// Access errors from the Result
+const result = registry.get(riskyAtom)
+
+if (Result.isFailure(result)) {
+  const error = Result.error(result)
+  // Handle error
+}
+```
+
+## Side effects and finalizers
+
+Atoms with effects automatically get a `Scope`, allowing you to add finalizers:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const resourceAtom = Atom.make(
+  Effect.gen(function* () {
+    const resource = yield* acquireResource()
+    
+    // Cleanup when atom is rebuilt or disposed
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        resource.close()
+      })
+    )
+    
+    return resource.data
+  })
+)
+```
+
+<Warning>
+  Finalizers run when:
+  - The atom is rebuilt (dependencies change)
+  - The atom is disposed (no longer used and not keepAlive)
+  - The atom's effect is interrupted
+</Warning>
+
+## Async state patterns
+
+### Loading states
+
+```typescript
+import { Atom, Result } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const dataAtom = Atom.make(
+  Effect.sleep(1000).pipe(
+    Effect.map(() => "data")
+  ),
+  { initialValue: "placeholder" }
+)
+
+const uiAtom = Atom.make((get) => {
+  const result = get(dataAtom)
+  
+  return Result.match(result, {
+    onInitial: () => "Initializing...",
+    onFailure: (cause) => `Error: ${cause}`,
+    onSuccess: (data) => {
+      if (result.waiting) {
+        return `Loading... (last: ${data})`
+      }
+      return `Data: ${data}`
+    }
+  })
+})
+```
+
+### Dependent effects
+
+Chain effects that depend on each other:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userIdAtom = Atom.make(1)
+
+const userAtom = runtime.atom((get) =>
+  Effect.gen(function* () {
+    const userId = get(userIdAtom)
+    const users = yield* Users
+    return yield* users.getById(userId)
+  })
+)
+
+const userPostsAtom = runtime.atom((get) =>
+  Effect.gen(function* () {
+    // Wait for user to load
+    const user = yield* get.result(userAtom)
+    
+    const posts = yield* Posts
+    return yield* posts.getByUserId(user.id)
+  })
+)
+```
+
+### Retrying effects
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Schedule } from "effect"
+
+const dataAtom = Atom.make(
+  Effect.tryPromise(() => fetch("/api/data")).pipe(
+    Effect.retry(Schedule.exponential(100, 2)),
+    Effect.flatMap((response) =>
+      Effect.tryPromise(() => response.json())
+    )
+  )
+)
+```
+
+## Uninterruptible effects
+
+By default, effects in atoms can be interrupted. Control this behavior:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+// This approach uses internal options (not in public API)
+// For uninterruptible effects, use Effect.uninterruptible:
+const criticalAtom = Atom.make(
+  Effect.gen(function* () {
+    yield* Effect.uninterruptible(
+      // This part won't be interrupted
+      saveToDatabase(data)
+    )
+    return "saved"
+  })
+)
+```

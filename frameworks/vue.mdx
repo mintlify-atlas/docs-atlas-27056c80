@@ -1,0 +1,394 @@
+---
+title: Vue integration
+description: Use Effect Atom with Vue composables for reactive state management
+---
+
+The `@effect-atom/atom-vue` package provides Vue composables for integrating Effect Atom into your Vue 3 applications.
+
+## Installation
+
+```bash
+pnpm add @effect-atom/atom-vue
+```
+
+## Core composables
+
+### useAtomValue
+
+Read the current value of an atom and subscribe to changes.
+
+```vue
+<script setup lang="ts">
+import { Atom, useAtomValue } from "@effect-atom/atom-vue"
+
+const countAtom = Atom.make(0)
+const count = useAtomValue(() => countAtom)
+</script>
+
+<template>
+  <h1>{{ count }}</h1>
+</template>
+```
+
+<Note>
+  `useAtomValue` returns a Vue `Ref` that automatically updates when the atom value changes.
+</Note>
+
+### useAtomSet
+
+Get a setter function for an atom without subscribing to its value.
+
+```vue
+<script setup lang="ts">
+import { Atom, useAtomSet } from "@effect-atom/atom-vue"
+
+const countAtom = Atom.make(0)
+const setCount = useAtomSet(() => countAtom)
+
+const increment = () => setCount((count) => count + 1)
+</script>
+
+<template>
+  <button @click="increment">Increment</button>
+</template>
+```
+
+#### Mode options
+
+For atoms that return `Result` types, you can specify how to handle the result:
+
+<CodeGroup>
+
+```vue Value mode (default)
+<script setup lang="ts">
+const setCount = useAtomSet(() => effectfulAtom)
+
+const handleClick = () => {
+  setCount(42) // Returns void immediately
+}
+</script>
+```
+
+```vue Promise mode
+<script setup lang="ts">
+const setCount = useAtomSet(() => effectfulAtom, { mode: "promise" })
+
+const handleClick = async () => {
+  const result = await setCount(42)
+  console.log(result) // Success value
+}
+</script>
+```
+
+```vue Promise Exit mode
+<script setup lang="ts">
+import { Exit } from "effect"
+
+const setCount = useAtomSet(() => effectfulAtom, { mode: "promiseExit" })
+
+const handleClick = async () => {
+  const exit = await setCount(42)
+  if (Exit.isSuccess(exit)) {
+    console.log(exit.value)
+  } else {
+    console.error(exit.cause)
+  }
+}
+</script>
+```
+
+</CodeGroup>
+
+### useAtom
+
+Combines `useAtomValue` and `useAtomSet` for reading and writing in a single composable.
+
+```vue
+<script setup lang="ts">
+import { Atom, useAtom } from "@effect-atom/atom-vue"
+
+const countAtom = Atom.make(0)
+const [count, setCount] = useAtom(() => countAtom)
+
+const increment = () => setCount((c) => c + 1)
+const decrement = () => setCount((c) => c - 1)
+</script>
+
+<template>
+  <div>
+    <h1>{{ count }}</h1>
+    <button @click="increment">+</button>
+    <button @click="decrement">-</button>
+  </div>
+</template>
+```
+
+### useAtomRef
+
+Subscribe to an `AtomRef` value.
+
+```vue
+<script setup lang="ts">
+import { AtomRef, useAtomRef } from "@effect-atom/atom-vue"
+
+const formRef = AtomRef.make({ name: "", email: "" })
+const form = useAtomRef(() => formRef)
+</script>
+
+<template>
+  <div>{{ form.name }} - {{ form.email }}</div>
+</template>
+```
+
+## Registry management
+
+By default, Vue uses a global registry for all atoms. You can create isolated registries using the registry injection system.
+
+### injectRegistry
+
+Access the current registry from the component context.
+
+```vue
+<script setup lang="ts">
+import { injectRegistry } from "@effect-atom/atom-vue"
+
+const registry = injectRegistry()
+// Use registry directly for advanced operations
+</script>
+```
+
+### Provide custom registry
+
+Provide a custom registry to a component tree using Vue's provide/inject.
+
+```vue
+<script setup lang="ts">
+import { Registry, registryKey } from "@effect-atom/atom-vue"
+import { provide } from "vue"
+
+const customRegistry = Registry.make({
+  defaultIdleTTL: 1000
+})
+
+provide(registryKey, customRegistry)
+</script>
+
+<template>
+  <div>
+    <!-- Child components will use customRegistry -->
+    <Counter />
+  </div>
+</template>
+```
+
+<Note>
+  Each custom registry creates an isolated atom state scope. Atoms are not shared between different registries.
+</Note>
+
+## Working with effects
+
+Vue composables work seamlessly with Effect atoms.
+
+```vue
+<script setup lang="ts">
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-vue"
+import { Effect } from "effect"
+import { computed } from "vue"
+
+interface User {
+  id: string
+  name: string
+}
+
+const userAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise(() =>
+      fetch("/api/user").then(r => r.json())
+    )
+    return response as User
+  })
+)
+
+const result = useAtomValue(() => userAtom)
+const user = computed(() => Result.getOrElse(result.value, () => null))
+const isLoading = computed(() => result.value._tag === "Initial")
+</script>
+
+<template>
+  <div v-if="isLoading">Loading...</div>
+  <div v-else-if="user">
+    <h2>{{ user.name }}</h2>
+    <p>ID: {{ user.id }}</p>
+  </div>
+</template>
+```
+
+## Working with streams
+
+Effect Atom works seamlessly with Effect streams for reactive data sources.
+
+```vue
+<script setup lang="ts">
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-vue"
+import { Schedule, Stream, Cause } from "effect"
+import { computed } from "vue"
+
+const countAtom = Atom.make(Stream.fromSchedule(Schedule.spaced(1000)))
+const result = useAtomValue(() => countAtom)
+
+const count = computed(() => 
+  Result.getOrElse(result.value, () => 0)
+)
+
+const error = computed(() =>
+  result.value._tag === "Failure" 
+    ? Cause.pretty(result.value.cause) 
+    : null
+)
+</script>
+
+<template>
+  <div v-if="error">Error: {{ error }}</div>
+  <div v-else>Count: {{ count }}</div>
+</template>
+```
+
+### Pull-based streams
+
+For paginated or infinite scroll data:
+
+```vue
+<script setup lang="ts">
+import { Atom, Result, useAtom } from "@effect-atom/atom-vue"
+import { Stream } from "effect"
+import { computed } from "vue"
+
+const itemsAtom = Atom.pull(Stream.range(1, 100))
+const [result, loadMore] = useAtom(() => itemsAtom)
+
+const items = computed(() =>
+  result.value._tag === "Success" ? result.value.value.items : []
+)
+
+const done = computed(() =>
+  result.value._tag === "Success" ? result.value.value.done : false
+)
+</script>
+
+<template>
+  <div>
+    <ul>
+      <li v-for="item in items" :key="item">{{ item }}</li>
+    </ul>
+    <button v-if="!done" @click="() => loadMore()">Load more</button>
+  </div>
+</template>
+```
+
+## Complete example
+
+<CodeGroup>
+
+```vue Counter.vue
+<script setup lang="ts">
+import { Atom, useAtomValue, useAtomSet } from "@effect-atom/atom-vue"
+
+const countAtom = Atom.make(0).pipe(Atom.keepAlive)
+
+const count = useAtomValue(() => countAtom)
+const setCount = useAtomSet(() => countAtom)
+
+const increment = () => setCount((c) => c + 1)
+const decrement = () => setCount((c) => c - 1)
+</script>
+
+<template>
+  <div>
+    <h1>{{ count }}</h1>
+    <button @click="increment">+</button>
+    <button @click="decrement">-</button>
+  </div>
+</template>
+```
+
+```vue UserProfile.vue
+<script setup lang="ts">
+import { Atom, Result, useAtomValue, useAtomSet } from "@effect-atom/atom-vue"
+import { Effect } from "effect"
+import { computed } from "vue"
+
+interface User {
+  id: string
+  name: string
+  email: string
+}
+
+const usersAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise(() =>
+      fetch("/api/users").then(r => r.json())
+    )
+    return response as User[]
+  })
+)
+
+const result = useAtomValue(() => usersAtom)
+const users = computed(() => Result.getOrElse(result.value, () => []))
+const isLoading = computed(() => result.value._tag === "Initial")
+const hasError = computed(() => result.value._tag === "Failure")
+</script>
+
+<template>
+  <div>
+    <div v-if="isLoading">Loading users...</div>
+    <div v-else-if="hasError">Failed to load users</div>
+    <ul v-else>
+      <li v-for="user in users" :key="user.id">
+        {{ user.name }} ({{ user.email }})
+      </li>
+    </ul>
+  </div>
+</template>
+```
+
+</CodeGroup>
+
+## Reactive atom parameters
+
+<Note>
+  All composables accept a function that returns the atom. This allows you to use reactive values when selecting atoms.
+</Note>
+
+```vue
+<script setup lang="ts">
+import { Atom, useAtomValue } from "@effect-atom/atom-vue"
+import { ref, computed } from "vue"
+
+const userIdAtom = Atom.family((id: string) =>
+  Atom.make(
+    Effect.gen(function* () {
+      const response = yield* Effect.tryPromise(() =>
+        fetch(`/api/users/${id}`).then(r => r.json())
+      )
+      return response
+    })
+  )
+)
+
+const selectedId = ref("1")
+
+// Atom reactively updates when selectedId changes
+const user = useAtomValue(() => userIdAtom(selectedId.value))
+</script>
+
+<template>
+  <div>
+    <select v-model="selectedId">
+      <option value="1">User 1</option>
+      <option value="2">User 2</option>
+      <option value="3">User 3</option>
+    </select>
+    <div>{{ user }}</div>
+  </div>
+</template>
+```

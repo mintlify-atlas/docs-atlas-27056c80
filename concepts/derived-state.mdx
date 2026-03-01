@@ -1,0 +1,355 @@
+---
+title: Derived state
+description: Learn how to create derived atoms using Atom.map, the get function, and compose complex reactive computations
+---
+
+## What is derived state?
+
+Derived state is computed from other atoms. When the source atoms change, derived atoms automatically recalculate. This creates a reactive dependency graph where changes propagate automatically.
+
+Derived atoms are read-only by default and only recompute when their dependencies change.
+
+## Creating derived atoms
+
+### Using the get function
+
+The most flexible way to create derived state is using a function that receives the `get` context:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const firstNameAtom = Atom.make("Alice")
+const lastNameAtom = Atom.make("Smith")
+
+const fullNameAtom = Atom.make((get) => {
+  const firstName = get(firstNameAtom)
+  const lastName = get(lastNameAtom)
+  return `${firstName} ${lastName}`
+})
+// Type: Atom<string>
+```
+
+When either `firstNameAtom` or `lastNameAtom` changes, `fullNameAtom` automatically recalculates.
+
+### Using Atom.map
+
+For simple transformations of a single atom, use `Atom.map`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(5)
+
+// Map to a new value
+const doubledAtom = Atom.map(countAtom, (count) => count * 2)
+// Type: Atom<number>
+
+const labeledAtom = Atom.map(countAtom, (count) => `Count: ${count}`)
+// Type: Atom<string>
+```
+
+The `map` function has a pipeable API:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(5)
+
+const processedAtom = countAtom.pipe(
+  Atom.map(n => n * 2),
+  Atom.map(n => `Value: ${n}`)
+)
+```
+
+## Combining multiple atoms
+
+Derive state from multiple atoms using the `get` function:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const priceAtom = Atom.make(100)
+const quantityAtom = Atom.make(2)
+const taxRateAtom = Atom.make(0.1)
+
+const totalAtom = Atom.make((get) => {
+  const price = get(priceAtom)
+  const quantity = get(quantityAtom)
+  const taxRate = get(taxRateAtom)
+  
+  const subtotal = price * quantity
+  const tax = subtotal * taxRate
+  return subtotal + tax
+})
+// Automatically updates when price, quantity, or taxRate changes
+```
+
+## Deriving from Result atoms
+
+When working with atoms that contain `Result` types (from effects), use special combinators:
+
+### Using mapResult
+
+Transform the success value of a Result atom:
+
+```typescript
+import { Atom, Result } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+// Type: Atom<Result.Result<{ id: number; name: string }, never>>
+
+const userNameAtom = Atom.mapResult(userAtom, (user) => user.name)
+// Type: Atom<Result.Result<string, never>>
+```
+
+This preserves the `Result` wrapper while transforming the success value.
+
+### Using get.result in effects
+
+When creating effect-based derived atoms, use `get.result` to work with Result atoms:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+
+const greetingAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    // get.result unwraps the Result into an Effect
+    const user = yield* get.result(userAtom)
+    return `Hello, ${user.name}!`
+  })
+)
+// Type: Atom<Result.Result<string, never>>
+```
+
+<Note>
+  `get.result` automatically suspends when the atom is in a waiting state and fails when the atom has an error.
+</Note>
+
+## Chaining transformations
+
+Build complex derivations by chaining transformations:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const numbersAtom = Atom.make([1, 2, 3, 4, 5])
+
+const statsAtom = numbersAtom.pipe(
+  Atom.map(nums => nums.filter(n => n > 2)),
+  Atom.map(nums => ({
+    count: nums.length,
+    sum: nums.reduce((a, b) => a + b, 0),
+    average: nums.reduce((a, b) => a + b, 0) / nums.length
+  }))
+)
+```
+
+## Conditional derivations
+
+Use the `get` function for conditional logic:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const isLoggedInAtom = Atom.make(false)
+const userAtom = Atom.make({ name: "Alice" })
+const guestNameAtom = Atom.make("Guest")
+
+const displayNameAtom = Atom.make((get) => {
+  const isLoggedIn = get(isLoggedInAtom)
+  
+  if (isLoggedIn) {
+    const user = get(userAtom)
+    return user.name
+  } else {
+    return get(guestNameAtom)
+  }
+})
+```
+
+## Async derived state
+
+Create derived atoms that perform async operations:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userIdAtom = Atom.make(1)
+
+const userDetailsAtom = Atom.make((get) => {
+  const userId = get(userIdAtom)
+  
+  return Effect.gen(function* () {
+    // Fetch user details based on ID
+    const response = yield* Effect.tryPromise(() =>
+      fetch(`/api/users/${userId}`)
+    )
+    const data = yield* Effect.tryPromise(() => response.json())
+    return data
+  })
+})
+// Type: Atom<Result.Result<UserData, Error>>
+```
+
+When `userIdAtom` changes, `userDetailsAtom` automatically refetches with the new ID.
+
+## Transform combinator
+
+For advanced cases, use `Atom.transform` to create custom derivations:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+
+const customAtom = Atom.transform(countAtom, (get) => {
+  const count = get(countAtom)
+  
+  // Access the atom's previous value
+  const previous = get.self<number>()
+  
+  // Add finalizers
+  get.addFinalizer(() => {
+    console.log("Cleaning up")
+  })
+  
+  return count * 2
+})
+```
+
+<Tip>
+  `transform` gives you access to the full `Context` API, allowing you to:
+  - Access other atoms with `get`
+  - Get the atom's own state with `get.self()`
+  - Add cleanup logic with `get.addFinalizer`
+  - Subscribe to other atoms
+  - Mount dependencies
+</Tip>
+
+## Dependency tracking
+
+Atoms automatically track which other atoms they depend on:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const aAtom = Atom.make(1)
+const bAtom = Atom.make(2)
+const cAtom = Atom.make(3)
+
+const sumAtom = Atom.make((get) => {
+  // This atom depends on all three
+  return get(aAtom) + get(bAtom) + get(cAtom)
+})
+
+// sumAtom will update when ANY of a, b, or c change
+```
+
+Dependencies are tracked dynamically:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const modeAtom = Atom.make<"a" | "b">("a")
+const valueAAtom = Atom.make(1)
+const valueBAtom = Atom.make(2)
+
+const dynamicAtom = Atom.make((get) => {
+  const mode = get(modeAtom)
+  
+  // Dependencies change based on mode
+  if (mode === "a") {
+    return get(valueAAtom)
+  } else {
+    return get(valueBAtom)
+  }
+})
+
+// When mode is "a", only depends on modeAtom and valueAAtom
+// When mode is "b", only depends on modeAtom and valueBAtom
+```
+
+## Memoization
+
+Derived atoms are automatically memoized - they only recalculate when dependencies change:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+let computeCount = 0
+
+const sourceAtom = Atom.make(1)
+const expensiveAtom = Atom.make((get) => {
+  computeCount++
+  const value = get(sourceAtom)
+  // Expensive computation
+  return value * 1000
+})
+
+// Reading multiple times doesn't recompute
+const value1 = registry.get(expensiveAtom) // computeCount = 1
+const value2 = registry.get(expensiveAtom) // computeCount = 1 (cached)
+
+// Only recomputes when dependency changes
+registry.set(sourceAtom, 2) // computeCount = 2
+```
+
+## Reading without subscribing
+
+Use `get.once` to read a value without creating a dependency:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const timestampAtom = Atom.make(Date.now())
+const dataAtom = Atom.make("data")
+
+const loggedAtom = Atom.make((get) => {
+  const data = get(dataAtom) // Creates dependency
+  
+  // Read timestamp once without creating dependency
+  const timestamp = get.once(timestampAtom)
+  
+  console.log(`[${timestamp}] ${data}`)
+  return data
+})
+
+// This atom only updates when dataAtom changes
+// Changes to timestampAtom won't trigger updates
+```
+
+## Writable derived atoms
+
+Create two-way bindings with custom write logic:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const celsiusAtom = Atom.make(0)
+
+const fahrenheitAtom = Atom.writable(
+  (get) => {
+    const celsius = get(celsiusAtom)
+    return (celsius * 9/5) + 32
+  },
+  (ctx, fahrenheit) => {
+    const celsius = (fahrenheit - 32) * 5/9
+    ctx.set(celsiusAtom, celsius)
+  }
+)
+
+// Reading converts C to F
+const f = registry.get(fahrenheitAtom)
+
+// Writing converts F to C and updates source
+registry.set(fahrenheitAtom, 100)
+```

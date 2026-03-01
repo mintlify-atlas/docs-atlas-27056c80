@@ -1,0 +1,485 @@
+---
+title: Event listeners
+description: Learn how to wrap browser event listeners and other external event sources in atoms for reactive event handling.
+---
+
+Effect Atom makes it easy to wrap event listeners from the DOM, WebSockets, or any other event source into reactive atoms. This allows you to treat events as reactive state that automatically updates components.
+
+## Basic event listener pattern
+
+The general pattern for wrapping an event listener involves:
+
+1. Setting up the event listener
+2. Using `get.setSelf` to update the atom when events occur
+3. Cleaning up with `get.addFinalizer`
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+// This is a simple atom that will emit the current scroll position of the
+// window.
+const scrollYAtom: Atom.Atom<number> = Atom.make((get) => {
+  // The handler will use `get.setSelf` to update the value of itself
+  const onScroll = () => {
+    get.setSelf(window.scrollY)
+  }
+  // We need to use `get.addFinalizer` to remove the event listener when the
+  // atom is no longer used.
+  window.addEventListener("scroll", onScroll)
+  get.addFinalizer(() => window.removeEventListener("scroll", onScroll))
+
+  // Return the current scroll position
+  return window.scrollY
+})
+```
+
+## Using in React components
+
+Once wrapped in an atom, event listeners become reactive state:
+
+```tsx
+import { Atom, useAtomValue } from "@effect-atom/atom-react"
+
+const scrollYAtom = Atom.make((get) => {
+  const onScroll = () => get.setSelf(window.scrollY)
+  window.addEventListener("scroll", onScroll)
+  get.addFinalizer(() => window.removeEventListener("scroll", onScroll))
+  return window.scrollY
+})
+
+function ScrollIndicator() {
+  const scrollY = useAtomValue(scrollYAtom)
+  
+  return (
+    <div style={{ position: "fixed", top: 0, right: 0 }}>
+      Scrolled: {scrollY}px
+    </div>
+  )
+}
+```
+
+<Note>
+The event listener is automatically registered when the first component mounts and unregistered when the last component unmounts.
+</Note>
+
+## Window resize events
+
+Track window dimensions reactively:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+interface WindowSize {
+  width: number
+  height: number
+}
+
+const windowSizeAtom = Atom.make<WindowSize>((get) => {
+  const updateSize = () => {
+    get.setSelf({
+      width: window.innerWidth,
+      height: window.innerHeight
+    })
+  }
+  
+  window.addEventListener("resize", updateSize)
+  get.addFinalizer(() => window.removeEventListener("resize", updateSize))
+  
+  return {
+    width: window.innerWidth,
+    height: window.innerHeight
+  }
+})
+
+function ResponsiveComponent() {
+  const { width, height } = useAtomValue(windowSizeAtom)
+  
+  return (
+    <div>
+      <p>Window size: {width} x {height}</p>
+      {width < 768 && <p>Mobile view</p>}
+      {width >= 768 && <p>Desktop view</p>}
+    </div>
+  )
+}
+```
+
+## Mouse position tracking
+
+Create an atom that tracks mouse position:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+interface MousePosition {
+  x: number
+  y: number
+}
+
+const mousePositionAtom = Atom.make<MousePosition>((get) => {
+  const updatePosition = (e: MouseEvent) => {
+    get.setSelf({ x: e.clientX, y: e.clientY })
+  }
+  
+  window.addEventListener("mousemove", updatePosition)
+  get.addFinalizer(() => window.removeEventListener("mousemove", updatePosition))
+  
+  return { x: 0, y: 0 }
+})
+
+function MouseTracker() {
+  const { x, y } = useAtomValue(mousePositionAtom)
+  
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: x + 10,
+        top: y + 10,
+        pointerEvents: "none"
+      }}
+    >
+      {x}, {y}
+    </div>
+  )
+}
+```
+
+## Keyboard events
+
+Track pressed keys:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const pressedKeysAtom = Atom.make<Set<string>>((get) => {
+  const keys = new Set<string>()
+  
+  const onKeyDown = (e: KeyboardEvent) => {
+    keys.add(e.key)
+    get.setSelf(new Set(keys))
+  }
+  
+  const onKeyUp = (e: KeyboardEvent) => {
+    keys.delete(e.key)
+    get.setSelf(new Set(keys))
+  }
+  
+  window.addEventListener("keydown", onKeyDown)
+  window.addEventListener("keyup", onKeyUp)
+  
+  get.addFinalizer(() => {
+    window.removeEventListener("keydown", onKeyDown)
+    window.removeEventListener("keyup", onKeyUp)
+  })
+  
+  return new Set<string>()
+})
+
+function KeyboardDisplay() {
+  const keys = useAtomValue(pressedKeysAtom)
+  
+  return (
+    <div>
+      <p>Pressed keys: {Array.from(keys).join(", ")}</p>
+      {keys.has("Shift") && <p>Shift is pressed!</p>}
+    </div>
+  )
+}
+```
+
+## WebSocket events
+
+Wrap WebSocket connections in atoms:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+interface WebSocketState<T> {
+  status: "connecting" | "connected" | "disconnected" | "error"
+  lastMessage: T | null
+  error: Error | null
+}
+
+function createWebSocketAtom<T = unknown>(url: string) {
+  return Atom.make<WebSocketState<T>>((get) => {
+    const ws = new WebSocket(url)
+    
+    let currentState: WebSocketState<T> = {
+      status: "connecting",
+      lastMessage: null,
+      error: null
+    }
+    
+    ws.onopen = () => {
+      currentState = { ...currentState, status: "connected" }
+      get.setSelf(currentState)
+    }
+    
+    ws.onmessage = (event) => {
+      currentState = {
+        ...currentState,
+        lastMessage: JSON.parse(event.data)
+      }
+      get.setSelf(currentState)
+    }
+    
+    ws.onerror = (event) => {
+      currentState = {
+        ...currentState,
+        status: "error",
+        error: new Error("WebSocket error")
+      }
+      get.setSelf(currentState)
+    }
+    
+    ws.onclose = () => {
+      currentState = { ...currentState, status: "disconnected" }
+      get.setSelf(currentState)
+    }
+    
+    get.addFinalizer(() => {
+      ws.close()
+    })
+    
+    return currentState
+  })
+}
+
+const chatAtom = createWebSocketAtom<{ message: string }>("wss://chat.example.com")
+
+function ChatComponent() {
+  const state = useAtomValue(chatAtom)
+  
+  return (
+    <div>
+      <p>Status: {state.status}</p>
+      {state.lastMessage && (
+        <p>Last message: {state.lastMessage.message}</p>
+      )}
+      {state.error && <p>Error: {state.error.message}</p>}
+    </div>
+  )
+}
+```
+
+## Intersection Observer
+
+Track element visibility with Intersection Observer:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+function createIntersectionAtom(elementId: string, options?: IntersectionObserverInit) {
+  return Atom.make<boolean>((get) => {
+    const element = document.getElementById(elementId)
+    if (!element) return false
+    
+    let isIntersecting = false
+    
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.target.id === elementId) {
+            isIntersecting = entry.isIntersecting
+            get.setSelf(isIntersecting)
+          }
+        })
+      },
+      options
+    )
+    
+    observer.observe(element)
+    
+    get.addFinalizer(() => {
+      observer.disconnect()
+    })
+    
+    return isIntersecting
+  })
+}
+
+const isVisibleAtom = createIntersectionAtom("my-element", {
+  threshold: 0.5
+})
+
+function LazyLoadComponent() {
+  const isVisible = useAtomValue(isVisibleAtom)
+  
+  return (
+    <div id="my-element">
+      {isVisible ? (
+        <img src="heavy-image.jpg" alt="Loaded when visible" />
+      ) : (
+        <div>Placeholder</div>
+      )}
+    </div>
+  )
+}
+```
+
+## Media query listeners
+
+Respond to media query changes:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+function createMediaQueryAtom(query: string) {
+  return Atom.make<boolean>((get) => {
+    const mediaQuery = window.matchMedia(query)
+    
+    const updateMatch = (e: MediaQueryListEvent | MediaQueryList) => {
+      get.setSelf(e.matches)
+    }
+    
+    // Modern browsers
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", updateMatch)
+      get.addFinalizer(() => {
+        mediaQuery.removeEventListener("change", updateMatch)
+      })
+    } else {
+      // Fallback for older browsers
+      mediaQuery.addListener(updateMatch)
+      get.addFinalizer(() => {
+        mediaQuery.removeListener(updateMatch)
+      })
+    }
+    
+    return mediaQuery.matches
+  })
+}
+
+const isDarkModeAtom = createMediaQueryAtom("(prefers-color-scheme: dark)")
+const isMobileAtom = createMediaQueryAtom("(max-width: 768px)")
+
+function ThemedComponent() {
+  const isDark = useAtomValue(isDarkModeAtom)
+  const isMobile = useAtomValue(isMobileAtom)
+  
+  return (
+    <div className={isDark ? "dark-theme" : "light-theme"}>
+      <p>Theme: {isDark ? "Dark" : "Light"}</p>
+      <p>Device: {isMobile ? "Mobile" : "Desktop"}</p>
+    </div>
+  )
+}
+```
+
+## Custom event emitters
+
+Wrap custom event emitters:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { EventEmitter } from "events"
+
+interface CustomEvent {
+  type: string
+  payload: unknown
+}
+
+function createEventEmitterAtom(emitter: EventEmitter, eventName: string) {
+  return Atom.make<CustomEvent | null>((get) => {
+    const handler = (payload: unknown) => {
+      get.setSelf({ type: eventName, payload })
+    }
+    
+    emitter.on(eventName, handler)
+    
+    get.addFinalizer(() => {
+      emitter.off(eventName, handler)
+    })
+    
+    return null
+  })
+}
+
+const myEmitter = new EventEmitter()
+const eventAtom = createEventEmitterAtom(myEmitter, "data")
+
+function EventDisplay() {
+  const event = useAtomValue(eventAtom)
+  
+  return (
+    <div>
+      {event ? (
+        <p>Event: {JSON.stringify(event)}</p>
+      ) : (
+        <p>Waiting for events...</p>
+      )}
+    </div>
+  )
+}
+```
+
+## Best practices
+
+<Tip>
+Always use `get.addFinalizer` to clean up event listeners. This prevents memory leaks when atoms are no longer in use.
+</Tip>
+
+### Keep atoms focused
+
+```ts
+// ✅ Good: Each atom handles one event type
+const scrollYAtom = Atom.make(...)
+const scrollXAtom = Atom.make(...)
+
+// ❌ Bad: One atom trying to handle too much
+const allEventsAtom = Atom.make(...)
+```
+
+### Use TypeScript for event types
+
+```ts
+// ✅ Good: Type-safe event handling
+const mouseAtom = Atom.make<MousePosition>((get) => {
+  const handler = (e: MouseEvent) => {
+    get.setSelf({ x: e.clientX, y: e.clientY })
+  }
+  // ...
+})
+```
+
+### Throttle or debounce high-frequency events
+
+For events that fire very frequently (like scroll or mousemove), consider throttling:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const scrollYAtom = Atom.make((get) => {
+  let timeoutId: number | undefined
+  
+  const onScroll = () => {
+    if (timeoutId !== undefined) return
+    
+    timeoutId = window.setTimeout(() => {
+      get.setSelf(window.scrollY)
+      timeoutId = undefined
+    }, 100) // Throttle to every 100ms
+  }
+  
+  window.addEventListener("scroll", onScroll, { passive: true })
+  get.addFinalizer(() => {
+    window.removeEventListener("scroll", onScroll)
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId)
+    }
+  })
+  
+  return window.scrollY
+})
+```
+
+### Use passive listeners for scroll events
+
+```ts
+window.addEventListener("scroll", onScroll, { passive: true })
+```
+
+<Note>
+Passive event listeners improve scrolling performance by telling the browser that the listener won't call `preventDefault()`.
+</Note>

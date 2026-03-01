@@ -1,0 +1,324 @@
+---
+title: Streams
+description: Learn how to work with Effect streams in atoms using Atom.make and Atom.pull for reactive data sources.
+---
+
+Effect Atom provides powerful integration with Effect's `Stream` type, allowing you to create reactive atoms from streaming data sources.
+
+## Creating atoms from streams
+
+When you pass a `Stream` to `Atom.make`, it automatically subscribes to the stream and returns the latest value as a `Result`:
+
+```tsx
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-react"
+import { Cause, Schedule, Stream } from "effect"
+
+// This will be a simple atom that emits an incrementing number every second.
+//
+// Atom.make will give back the latest value of a `Stream` as a `Result`.
+//
+//        ┌─── Atom.Atom<Result.Result<number>>
+//        ▼
+const countAtom = Atom.make(Stream.fromSchedule(Schedule.spaced(1000)))
+
+function Counter() {
+  const result = useAtomValue(countAtom)
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Starting...</div>)
+    .onSuccess((count, { waiting }) => (
+      <div>
+        <h1>{count}</h1>
+        {waiting && <p>Updating...</p>}
+      </div>
+    ))
+    .render()
+}
+```
+
+<Note>
+The atom will automatically handle the stream subscription lifecycle, cleaning up when no components are using the atom.
+</Note>
+
+## How stream atoms work
+
+When a stream is passed to `Atom.make`, the following happens:
+
+<Steps>
+
+### Stream subscription
+
+The atom subscribes to the stream and begins pulling values.
+
+### Latest value tracking
+
+As chunks arrive from the stream, the atom updates with the last value from each chunk.
+
+### Result states
+
+The atom transitions through different `Result` states:
+- `Initial`: Before any values arrive
+- `Success (waiting: true)`: While processing new chunks
+- `Success (waiting: false)`: When a chunk completes
+- `Failure`: If the stream fails
+
+### Completion handling
+
+When the stream completes, the atom retains the last emitted value.
+
+</Steps>
+
+## Using Atom.pull for manual control
+
+For more control over stream consumption, use `Atom.pull` to create a "pull atom" that lets you manually request chunks from a stream:
+
+```tsx
+import { Atom, Result, useAtom } from "@effect-atom/atom-react"
+import { Cause, Stream } from "effect"
+
+// Atom.pull creates a specialized atom that will pull from a `Stream`
+// one chunk at a time.
+//
+// This is useful for infinite scrolling or paginated data.
+//
+//        ┌─── Atom.Writable<Atom.PullResult<number>, void>
+//        ▼
+const countPullAtom = Atom.pull(Stream.make(1, 2, 3, 4, 5))
+
+// Here is a component that uses `countPullAtom` to display the numbers in a list.
+//
+// You can use `useAtom` to both read the value of an atom and gain access to the
+// setter function.
+//
+// Each time the setter function is called, it will pull a new chunk of data
+// from the `Stream`, and append it to the list.
+function CountPullAtomComponent() {
+  const [result, pull] = useAtom(countPullAtom)
+
+  return Result.builder(result)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess(({ items, done }, { waiting }) => (
+      <div>
+        <ul>
+          {items.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+        {!done && <button onClick={() => pull()}>Load more</button>}
+        {waiting ? <p>Loading more...</p> : <p>Loaded chunk</p>}
+        {done && <p>All items loaded</p>}
+      </div>
+    ))
+    .render()
+}
+```
+
+## Pull result structure
+
+A pull atom returns a `PullResult` type:
+
+```ts
+type PullResult<A, E = never> = Result.Result<{
+  readonly done: boolean
+  readonly items: Array.NonEmptyArray<A>
+}, E | Cause.NoSuchElementException>
+```
+
+- `done`: Whether the stream has finished
+- `items`: Array of items from the current chunk (accumulated by default)
+
+<Warning>
+If the stream completes without emitting any values, the pull will fail with a `NoSuchElementException`.
+</Warning>
+
+## Disabling accumulation
+
+By default, `Atom.pull` accumulates all items from previous pulls. You can disable this behavior:
+
+```ts
+const pullAtom = Atom.pull(myStream, {
+  disableAccumulation: true
+})
+
+// Now each pull returns only the items from the current chunk
+```
+
+## Using pull with services
+
+You can use `runtimeAtom.pull` to create pull atoms that have access to Effect services:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Stream } from "effect"
+
+class DataService extends Effect.Service<DataService>()("app/DataService", {
+  effect: Effect.gen(function* () {
+    const getStream = () =>
+      Stream.make(1, 2, 3, 4, 5).pipe(
+        Stream.tap((n) => Effect.log(`Item ${n}`))
+      )
+    return { getStream } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(DataService.Default)
+
+const dataPullAtom = runtimeAtom.pull(
+  Effect.gen(function* () {
+    const service = yield* DataService
+    return service.getStream()
+  }),
+)
+```
+
+## Stream with initial value
+
+You can provide an initial value to display before the stream emits:
+
+```ts
+const countAtom = Atom.make(
+  Stream.fromSchedule(Schedule.spaced(1000)),
+  { initialValue: 0 }
+)
+
+// The atom will immediately have a success value of 0
+```
+
+## Creating streams from atoms
+
+You can also convert atoms into streams using the `get.stream` method in the atom context:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Stream } from "effect"
+
+const countAtom = Atom.make(0)
+
+const streamAtom = Atom.make(
+  Effect.gen(function* (get: Atom.Context) {
+    // Create a stream from the count atom
+    const countStream = get.stream(countAtom)
+    
+    // Transform the stream
+    return yield* Stream.runCollect(
+      countStream.pipe(
+        Stream.take(5),
+        Stream.map((n) => n * 2)
+      )
+    )
+  }),
+)
+```
+
+## Stream options in context
+
+The `get.stream` method accepts options:
+
+```ts
+get.stream(atom, {
+  // Don't include the current value, only future changes
+  withoutInitialValue: true,
+  // Buffer size for the underlying channel
+  bufferSize: 16
+})
+```
+
+## Working with result streams
+
+For atoms that return `Result`, use `get.streamResult` to automatically unwrap successful values:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Stream } from "effect"
+
+const dataAtom = Atom.make(
+  Effect.succeed(42)
+)
+
+const streamAtom = Atom.make(
+  Effect.gen(function* (get: Atom.Context) {
+    // streamResult automatically unwraps Result and fails on errors
+    const dataStream = get.streamResult(dataAtom)
+    
+    return yield* Stream.runCollect(
+      dataStream.pipe(
+        Stream.take(3)
+      )
+    )
+  }),
+)
+```
+
+## Infinite scrolling example
+
+Here's a complete example of using `Atom.pull` for infinite scrolling:
+
+```tsx
+import { Atom, Result, useAtom } from "@effect-atom/atom-react"
+import { Effect, Stream } from "effect"
+
+class PostsService extends Effect.Service<PostsService>()("app/PostsService", {
+  effect: Effect.gen(function* () {
+    let offset = 0
+    const pageSize = 20
+    
+    const getPostsStream = () =>
+      Stream.repeatEffect(
+        Effect.gen(function* () {
+          // Simulate API call
+          const posts = yield* Effect.succeed(
+            Array.from({ length: pageSize }, (_, i) => ({
+              id: offset + i,
+              title: `Post ${offset + i}`
+            }))
+          )
+          offset += pageSize
+          return posts
+        })
+      ).pipe(
+        Stream.flatMap(Stream.fromIterable),
+        Stream.take(100) // Limit to 100 posts total
+      )
+    
+    return { getPostsStream } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(PostsService.Default)
+
+const postsAtom = runtimeAtom.pull(
+  Effect.gen(function* () {
+    const service = yield* PostsService
+    return service.getPostsStream()
+  }),
+)
+
+function InfinitePostsList() {
+  const [result, loadMore] = useAtom(postsAtom)
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Loading posts...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess(({ items, done }, { waiting }) => (
+      <div>
+        <ul>
+          {items.map((post) => (
+            <li key={post.id}>{post.title}</li>
+          ))}
+        </ul>
+        {!done && (
+          <button onClick={() => loadMore()} disabled={waiting}>
+            {waiting ? "Loading..." : "Load more"}
+          </button>
+        )}
+        {done && <p>No more posts</p>}
+      </div>
+    ))
+    .render()
+}
+```
+
+<Tip>
+Pull atoms are perfect for implementing infinite scrolling, pagination, or any scenario where you want to load data incrementally based on user interaction.
+</Tip>

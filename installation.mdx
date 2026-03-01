@@ -1,0 +1,280 @@
+---
+title: Installation
+description: Install Effect Atom for React, Vue, or Solid with all required dependencies.
+---
+
+Effect Atom provides framework-specific packages for React, Vue, and Solid. Each package includes the core `@effect-atom/atom` library and framework-specific hooks.
+
+## Choose your framework
+
+<Tabs>
+  <Tab title="React">
+    ### Install for React
+
+    <CodeGroup>
+      ```bash npm
+      npm install @effect-atom/atom-react effect react scheduler
+      ```
+
+      ```bash yarn
+      yarn add @effect-atom/atom-react effect react scheduler
+      ```
+
+      ```bash pnpm
+      pnpm add @effect-atom/atom-react effect react scheduler
+      ```
+
+      ```bash bun
+      bun add @effect-atom/atom-react effect react scheduler
+      ```
+    </CodeGroup>
+
+    ### Peer dependencies
+
+    The React package requires:
+
+    - `effect` ^3.19 - The Effect library
+    - `react` >=18 {"<"}20 - React 18 or 19
+    - `scheduler` * - React's scheduler package
+
+    <Note>
+      React 18 or higher is required for concurrent features. Effect Atom works with both React 18 and 19.
+    </Note>
+
+    ### Import from the package
+
+    ```tsx
+    import { Atom, useAtomValue, useAtomSet, useAtom } from "@effect-atom/atom-react"
+    ```
+  </Tab>
+
+  <Tab title="Vue">
+    ### Install for Vue
+
+    <CodeGroup>
+      ```bash npm
+      npm install @effect-atom/atom-vue effect vue
+      ```
+
+      ```bash yarn
+      yarn add @effect-atom/atom-vue effect vue
+      ```
+
+      ```bash pnpm
+      pnpm add @effect-atom/atom-vue effect vue
+      ```
+
+      ```bash bun
+      bun add @effect-atom/atom-vue effect vue
+      ```
+    </CodeGroup>
+
+    ### Peer dependencies
+
+    The Vue package requires:
+
+    - `effect` ^3.19 - The Effect library
+    - `vue` ^3.4 - Vue 3.4 or higher
+
+    ### Import from the package
+
+    ```ts
+    import { Atom, useAtomValue, useAtomSet, useAtom } from "@effect-atom/atom-vue"
+    ```
+  </Tab>
+
+  <Tab title="Solid">
+    ### Install for Solid
+
+    <CodeGroup>
+      ```bash npm
+      npm install @effect-atom/atom-solid effect solid-js
+      ```
+
+      ```bash yarn
+      yarn add @effect-atom/atom-solid effect solid-js
+      ```
+
+      ```bash pnpm
+      pnpm add @effect-atom/atom-solid effect solid-js
+      ```
+
+      ```bash bun
+      bun add @effect-atom/atom-solid effect solid-js
+      ```
+    </CodeGroup>
+
+    ### Peer dependencies
+
+    The Solid package requires:
+
+    - `effect` ^3.19 - The Effect library
+    - `solid-js` >=1 {"<"}2 - Solid 1.x
+
+    ### Import from the package
+
+    ```tsx
+    import { Atom, useAtomValue, useAtomSet, useAtom } from "@effect-atom/atom-solid"
+    ```
+  </Tab>
+</Tabs>
+
+## Optional dependencies
+
+Depending on which features you use, you may need additional Effect packages:
+
+### Platform packages
+
+For browser integrations (localStorage, fetch, etc.):
+
+<CodeGroup>
+  ```bash npm
+  npm install @effect/platform @effect/platform-browser
+  ```
+
+  ```bash yarn
+  yarn add @effect/platform @effect/platform-browser
+  ```
+
+  ```bash pnpm
+  pnpm add @effect/platform @effect/platform-browser
+  ```
+
+  ```bash bun
+  bun add @effect/platform @effect/platform-browser
+  ```
+</CodeGroup>
+
+**Required for:**
+- `Atom.kvs` (localStorage integration)
+- `AtomHttpApi` (HTTP API client)
+- `BrowserKeyValueStore`
+- `FetchHttpClient`
+
+### RPC package
+
+For RPC client integration:
+
+<CodeGroup>
+  ```bash npm
+  npm install @effect/rpc
+  ```
+
+  ```bash yarn
+  yarn add @effect/rpc
+  ```
+
+  ```bash pnpm
+  pnpm add @effect/rpc
+  ```
+
+  ```bash bun
+  bun add @effect/rpc
+  ```
+</CodeGroup>
+
+**Required for:**
+- `AtomRpc` module
+- RPC client atoms
+
+### Experimental package
+
+For reactivity features:
+
+<CodeGroup>
+  ```bash npm
+  npm install @effect/experimental
+  ```
+
+  ```bash yarn
+  yarn add @effect/experimental
+  ```
+
+  ```bash pnpm
+  pnpm add @effect/experimental
+  ```
+
+  ```bash bun
+  bun add @effect/experimental
+  ```
+</CodeGroup>
+
+**Required for:**
+- `Atom.withReactivity` - Query invalidation
+- `Reactivity` service integration
+
+## Verify installation
+
+Create a simple test file to verify everything is installed correctly:
+
+<Tabs>
+  <Tab title="React">
+    ```tsx test.tsx
+    import { Atom, useAtomValue } from "@effect-atom/atom-react"
+
+    const testAtom = Atom.make("Hello, Effect Atom!")
+
+    export function Test() {
+      const value = useAtomValue(testAtom)
+      return <div>{value}</div>
+    }
+    ```
+  </Tab>
+
+  <Tab title="Vue">
+    ```vue Test.vue
+    <script setup lang="ts">
+    import { Atom, useAtomValue } from "@effect-atom/atom-vue"
+
+    const testAtom = Atom.make("Hello, Effect Atom!")
+    const value = useAtomValue(testAtom)
+    </script>
+
+    <template>
+      <div>{{ value }}</div>
+    </template>
+    ```
+  </Tab>
+
+  <Tab title="Solid">
+    ```tsx Test.tsx
+    import { Atom, useAtomValue } from "@effect-atom/atom-solid"
+
+    const testAtom = Atom.make("Hello, Effect Atom!")
+
+    export function Test() {
+      const value = useAtomValue(testAtom)
+      return <div>{value()}</div>
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## TypeScript configuration
+
+Effect Atom works best with TypeScript. Add these settings to your `tsconfig.json`:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "strict": true,
+    "moduleResolution": "bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx", // or "preserve" for Vue
+    "skipLibCheck": true
+  }
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first application with Effect Atom
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/atoms">
+    Learn the fundamentals of atoms and effects
+  </Card>
+</CardGroup>

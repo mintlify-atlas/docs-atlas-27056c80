@@ -1,0 +1,469 @@
+---
+title: Result type
+description: Understanding the Result type, using Result.builder for pattern matching, and handling async states and errors
+---
+
+## What is the Result type?
+
+The `Result` type represents the state of an asynchronous computation in Effect Atom. It's similar to Effect's `Exit` type but designed specifically for reactive state management.
+
+```typescript
+type Result<A, E = never> = 
+  | Initial<A, E>    // Not yet started or no value
+  | Success<A, E>    // Completed successfully
+  | Failure<A, E>    // Failed with an error
+```
+
+Each variant has a `waiting` flag to indicate if an async operation is in progress.
+
+## Result states
+
+### Initial state
+
+Represents an atom that hasn't produced a value yet:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const initial = Result.initial<number, never>()
+// Type: Initial<number, never>
+
+const initialWaiting = Result.initial<number, never>(true)
+// Type: Initial<number, never> with waiting = true
+
+if (Result.isInitial(result)) {
+  console.log("No value yet")
+}
+```
+
+### Success state
+
+Represents a successful computation:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const success = Result.success(42)
+// Type: Success<number, never>
+
+const successWaiting = Result.success(42, { waiting: true })
+// Type: Success<number, never> with waiting = true
+
+if (Result.isSuccess(result)) {
+  console.log("Value:", result.value)
+  console.log("Timestamp:", result.timestamp)
+}
+```
+
+### Failure state
+
+Represents a failed computation with a `Cause`:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Cause } from "effect"
+
+const failure = Result.fail(new Error("Something went wrong"))
+// Type: Failure<never, Error>
+
+const failureWithPrevious = Result.failure(
+  Cause.fail(new Error("Failed")),
+  {
+    previousSuccess: Option.some(Result.success(42)),
+    waiting: false
+  }
+)
+
+if (Result.isFailure(result)) {
+  console.log("Cause:", result.cause)
+  console.log("Previous success:", result.previousSuccess)
+}
+```
+
+## The waiting flag
+
+All Result variants have a `waiting` flag that indicates an async operation is in progress:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result = Result.success(42, { waiting: true })
+
+if (Result.isWaiting(result)) {
+  console.log("Loading...")
+}
+
+// Convert any result to waiting state
+const waitingResult = Result.waiting(result)
+```
+
+<Note>
+  The `waiting` flag is useful for showing loading indicators while keeping the previous value visible.
+</Note>
+
+## Extracting values
+
+### Get value or else
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result: Result.Result<number, Error> = getResult()
+
+const value = Result.getOrElse(result, () => 0)
+// Returns the value if Success, otherwise 0
+```
+
+### Get value or throw
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result: Result.Result<number, Error> = getResult()
+
+const value = Result.getOrThrow(result)
+// Returns the value if Success, throws NoSuchElementException otherwise
+```
+
+### Get optional value
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Option } from "effect"
+
+const result: Result.Result<number, Error> = getResult()
+
+const value: Option.Option<number> = Result.value(result)
+// Some(value) if Success or Failure with previous success
+// None() if Initial
+```
+
+### Get error
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Option } from "effect"
+
+const result: Result.Result<number, Error> = getResult()
+
+const error: Option.Option<Error> = Result.error(result)
+// Some(error) if Failure
+// None() otherwise
+
+const cause: Option.Option<Cause.Cause<Error>> = Result.cause(result)
+// Some(cause) if Failure
+// None() otherwise
+```
+
+## Pattern matching with Result.builder
+
+The `Result.builder` provides a fluent API for handling different Result states:
+
+### Basic usage
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result: Result.Result<number, Error> = getResult()
+
+const output = Result.builder(result)
+  .onInitial((r) => "Loading...")
+  .onSuccess((value, r) => `Value: ${value}`)
+  .onFailure((cause, r) => `Error: ${Cause.pretty(cause)}`)
+  .render()
+// Type: string | null
+```
+
+### Handling specific errors
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Cause } from "effect"
+
+class NetworkError {
+  readonly _tag = "NetworkError"
+  constructor(readonly message: string) {}
+}
+
+class ValidationError {
+  readonly _tag = "ValidationError"
+  constructor(readonly field: string) {}
+}
+
+const result: Result.Result<Data, NetworkError | ValidationError> = getData()
+
+const output = Result.builder(result)
+  .onSuccess((data) => renderData(data))
+  .onErrorTag("NetworkError", (error) =>
+    `Network error: ${error.message}`
+  )
+  .onErrorTag("ValidationError", (error) =>
+    `Validation failed for: ${error.field}`
+  )
+  .render()
+```
+
+### Handling multiple error tags
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onSuccess((data) => renderData(data))
+  .onErrorTag(["NetworkError", "TimeoutError"], (error) =>
+    "Connection problem"
+  )
+  .onErrorTag("ValidationError", (error) =>
+    "Invalid input"
+  )
+  .render()
+```
+
+### Conditional error handling
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onSuccess((data) => renderData(data))
+  .onErrorIf(
+    (error): error is NotFoundError => error.status === 404,
+    (error) => "Not found"
+  )
+  .onError((error) => `Other error: ${error.message}`)
+  .render()
+```
+
+### Handling waiting state
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onWaiting((r) => "Loading...")
+  .onSuccess((value) => `Value: ${value}`)
+  .onFailure((cause) => `Error: ${Cause.pretty(cause)}`)
+  .render()
+```
+
+### Combined initial and waiting
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onInitialOrWaiting((r) => "Loading...")
+  .onSuccess((value) => `Value: ${value}`)
+  .onError((error) => error.message)
+  .render()
+```
+
+### Handling defects
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onSuccess((value) => renderValue(value))
+  .onError((error) => `Expected error: ${error.message}`)
+  .onDefect((defect) => `Unexpected error: ${String(defect)}`)
+  .render()
+```
+
+### Using orElse
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onSuccess((value) => `Value: ${value}`)
+  .orElse(() => "No value")
+// Type: string
+```
+
+### Using orNull
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.builder(result)
+  .onSuccess((value) => value)
+  .orNull()
+// Type: number | null
+```
+
+## Result.match
+
+For simple pattern matching without the builder:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.match(result, {
+  onInitial: (r) => "Loading...",
+  onSuccess: (r) => `Value: ${r.value}`,
+  onFailure: (r) => `Error: ${Cause.pretty(r.cause)}`
+})
+```
+
+### Match with error discrimination
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.matchWithError(result, {
+  onInitial: (r) => "Loading...",
+  onSuccess: (r) => `Value: ${r.value}`,
+  onError: (error, r) => `Error: ${error.message}`,
+  onDefect: (defect, r) => `Defect: ${String(defect)}`
+})
+```
+
+### Match with waiting
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const output = Result.matchWithWaiting(result, {
+  onWaiting: (r) => "Loading...",
+  onSuccess: (r) => `Value: ${r.value}`,
+  onError: (error, r) => `Error: ${error.message}`,
+  onDefect: (defect, r) => `Defect: ${String(defect)}`
+})
+```
+
+## Transforming Results
+
+### Map over success value
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result: Result.Result<number, Error> = Result.success(42)
+
+const doubled = Result.map(result, (n) => n * 2)
+// Type: Result.Result<number, Error>
+// Value: Success(84)
+```
+
+### FlatMap over success value
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const result: Result.Result<number, Error> = Result.success(42)
+
+const processed = Result.flatMap(
+  result,
+  (value, prev) => {
+    if (value > 0) {
+      return Result.success(value * 2)
+    } else {
+      return Result.fail(new Error("Invalid value"))
+    }
+  }
+)
+```
+
+## Converting between types
+
+### From Exit
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Exit } from "effect"
+
+const exit: Exit.Exit<number, Error> = Exit.succeed(42)
+const result = Result.fromExit(exit)
+// Type: Success<number, Error> | Failure<never, Error>
+```
+
+### To Exit
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Exit } from "effect"
+
+const result: Result.Result<number, Error> = Result.success(42)
+const exit = Result.toExit(result)
+// Type: Exit.Exit<number, Error | NoSuchElementException>
+```
+
+## Combining Results
+
+Combine multiple Results into one:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+
+const results = [
+  Result.success(1),
+  Result.success(2),
+  Result.success(3)
+]
+
+const combined = Result.all(results)
+// Type: Result.Result<[number, number, number], never>
+// Value: Success([1, 2, 3])
+
+// Works with objects too
+const objectResults = {
+  a: Result.success(1),
+  b: Result.success(2)
+}
+
+const combinedObject = Result.all(objectResults)
+// Type: Result.Result<{ a: number, b: number }, never>
+// Value: Success({ a: 1, b: 2 })
+```
+
+<Note>
+  `Result.all` short-circuits on the first failure or initial state.
+</Note>
+
+## Type utilities
+
+### Extract success type
+
+```typescript
+import type { Result } from "@effect-atom/atom"
+
+type MyResult = Result.Result<number, Error>
+type SuccessType = Result.Success<MyResult>
+// Type: number
+```
+
+### Extract failure type
+
+```typescript
+import type { Result } from "@effect-atom/atom"
+
+type MyResult = Result.Result<number, Error>
+type FailureType = Result.Failure<MyResult>
+// Type: Error
+```
+
+## Previous success values
+
+Failure states can retain the previous success value:
+
+```typescript
+import { Result } from "@effect-atom/atom"
+import { Option } from "effect"
+
+const success = Result.success(42)
+const failure = Result.failWithPrevious(
+  new Error("Failed"),
+  { previous: Option.some(success) }
+)
+
+if (Result.isFailure(failure)) {
+  // Access previous success
+  Option.match(failure.previousSuccess, {
+    onNone: () => console.log("No previous value"),
+    onSome: (prev) => console.log("Previous value:", prev.value)
+  })
+}
+```
+
+This is useful for showing stale data while displaying an error.

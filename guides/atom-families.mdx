@@ -1,0 +1,340 @@
+---
+title: Atom families
+description: Learn how to use Atom.family to create dynamic sets of atoms based on parameters for managing collections of related state.
+---
+
+Atom families allow you to dynamically create and manage sets of atoms based on a parameter. This is essential when you need to maintain separate state for multiple instances of the same type of data.
+
+## Why atom families?
+
+Atoms work by reference equality. If you create a new atom each time, React will treat it as a different atom and lose state. Atom families solve this by caching atoms based on a parameter:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+// ❌ Wrong: Creates a new atom each time
+const getUserAtom = (id: string) => Atom.make(fetchUser(id))
+
+// ✅ Correct: Caches atoms by id
+const userAtomFamily = Atom.family((id: string) =>
+  Atom.make(fetchUser(id))
+)
+```
+
+## Basic usage
+
+Create an atom family by passing a function that takes a parameter and returns an atom:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const findById = (id: string) => Effect.succeed({ id, name: "John Doe" })
+    return { findById } as const
+  }),
+}) {}
+
+// Create a `AtomRuntime` from a `Layer`
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// Atoms work by reference, so we need to use `Atom.family` to dynamically create a
+// set of atoms from a key.
+//
+// `Atom.family` will ensure that we get a stable reference to the atom for each key.
+//
+//       ┌─── (arg: string) => Atom.Atom<Result<{ id: string; name: string; }>>
+//       ▼
+const userAtom = Atom.family((id: string) =>
+  runtimeAtom.atom(
+    Effect.gen(function* () {
+      const users = yield* Users
+      return yield* users.findById(id)
+    }),
+  ),
+)
+```
+
+## Using in React components
+
+Once you have an atom family, call it with a parameter to get the corresponding atom:
+
+```tsx
+import { useAtomValue } from "@effect-atom/atom-react"
+
+function UserProfile({ userId }: { userId: string }) {
+  // Get the atom for this specific user
+  const result = useAtomValue(userAtom(userId))
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Loading user...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess((user) => (
+      <div>
+        <h1>{user.name}</h1>
+        <p>ID: {user.id}</p>
+      </div>
+    ))
+    .render()
+}
+
+function UsersList() {
+  const userIds = ["1", "2", "3"]
+  
+  return (
+    <div>
+      {userIds.map((id) => (
+        <UserProfile key={id} userId={id} />
+      ))}
+    </div>
+  )
+}
+```
+
+## How it works
+
+Atom families use a `MutableHashMap` to cache atoms:
+
+<Steps>
+
+### First access
+
+When you call the family function with a parameter for the first time, it creates a new atom and stores it in the cache.
+
+### Subsequent access
+
+Later calls with the same parameter return the cached atom.
+
+### Automatic cleanup
+
+In environments with `WeakRef` and `FinalizationRegistry` support, atoms are automatically removed from the cache when they're no longer referenced.
+
+</Steps>
+
+```ts
+// Simplified implementation
+export const family = <Arg, T extends object>(
+  f: (arg: Arg) => T
+): (arg: Arg) => T => {
+  const atoms = MutableHashMap.empty<Arg, WeakRef<T>>()
+  const registry = new FinalizationRegistry<Arg>((arg) => {
+    MutableHashMap.remove(atoms, arg)
+  })
+  
+  return function(arg) {
+    const atomEntry = MutableHashMap.get(atoms, arg).pipe(
+      Option.flatMapNullable((ref) => ref.deref())
+    )
+
+    if (atomEntry._tag === "Some") {
+      return atomEntry.value
+    }
+    const newAtom = f(arg)
+    MutableHashMap.set(atoms, arg, new WeakRef(newAtom))
+    registry.register(newAtom, arg)
+    return newAtom
+  }
+}
+```
+
+<Note>
+In environments without `WeakRef` support, atom families use a simple `MutableHashMap` without automatic cleanup.
+</Note>
+
+## Complex parameters
+
+You can use any hashable value as a parameter, including objects and tuples:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+// Using a tuple as the parameter
+const postAtom = Atom.family(([userId, postId]: [string, string]) =>
+  Atom.make(
+    Effect.succeed({
+      userId,
+      postId,
+      title: `Post ${postId} by user ${userId}`
+    })
+  )
+)
+
+// Usage
+const post = useAtomValue(postAtom(["user1", "post1"]))
+```
+
+## Writable atom families
+
+Atom families can also return writable atoms:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+// Create a family of counter atoms
+const counterFamily = Atom.family((id: string) =>
+  Atom.make(0).pipe(Atom.keepAlive)
+)
+
+function Counter({ counterId }: { counterId: string }) {
+  const [count, setCount] = useAtom(counterFamily(counterId))
+  
+  return (
+    <div>
+      <p>Counter {counterId}: {count}</p>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+    </div>
+  )
+}
+```
+
+## Function atom families
+
+You can create families of function atoms for parameterized operations:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Posts extends Effect.Service<Posts>()("app/Posts", {
+  effect: Effect.gen(function* () {
+    const create = (userId: string, title: string) =>
+      Effect.succeed({ id: "new", userId, title })
+    return { create } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(Posts.Default)
+
+// Create a family of post creation functions, one per user
+const createPostFamily = Atom.family((userId: string) =>
+  runtimeAtom.fn(
+    Effect.fnUntraced(function* (title: string) {
+      const posts = yield* Posts
+      return yield* posts.create(userId, title)
+    }),
+  )
+)
+
+function CreatePostButton({ userId }: { userId: string }) {
+  const createPost = useAtomSet(createPostFamily(userId), {
+    mode: "promiseExit"
+  })
+  
+  return (
+    <button onClick={async () => {
+      const exit = await createPost("My Post Title")
+      if (Exit.isSuccess(exit)) {
+        console.log("Post created:", exit.value)
+      }
+    }}>
+      Create Post
+    </button>
+  )
+}
+```
+
+## Dependent atom families
+
+Atom families can depend on other atoms:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const selectedUserIdAtom = Atom.make<string | null>(null)
+
+const userPostsFamily = Atom.family((userId: string) =>
+  Atom.make((get: Atom.Context) => {
+    // This atom will re-render if selectedUserIdAtom changes
+    const selectedId = get(selectedUserIdAtom)
+    const isSelected = selectedId === userId
+    
+    return {
+      userId,
+      isSelected,
+      posts: fetchPostsForUser(userId)
+    }
+  })
+)
+```
+
+## Best practices
+
+<Tip>
+Always use atom families when you need to create multiple atoms of the same type based on a parameter. This ensures proper caching and prevents unnecessary re-renders.
+</Tip>
+
+### Keep parameters simple
+
+Use simple, hashable values as parameters:
+
+```ts
+// ✅ Good: Simple string parameter
+const userAtom = Atom.family((id: string) => ...)
+
+// ⚠️  Caution: Complex object (ensure it's hashable)
+const complexAtom = Atom.family((params: { id: string; type: string }) => ...)
+```
+
+### Use with keepAlive
+
+For atoms that should persist across component unmounts:
+
+```ts
+const userAtom = Atom.family((id: string) =>
+  Atom.make(fetchUser(id)).pipe(Atom.keepAlive)
+)
+```
+
+### Combine with runtime atoms
+
+Atom families work great with runtime atoms for service-dependent state:
+
+```ts
+const runtimeAtom = Atom.runtime(MyService.Default)
+
+const dataFamily = Atom.family((id: string) =>
+  runtimeAtom.atom(
+    Effect.gen(function* () {
+      const service = yield* MyService
+      return yield* service.getById(id)
+    })
+  )
+)
+```
+
+## Common patterns
+
+### Todo list items
+
+```ts
+const todoFamily = Atom.family((id: string) =>
+  Atom.make({
+    id,
+    text: "",
+    completed: false
+  })
+)
+```
+
+### Form fields
+
+```ts
+const formFieldFamily = Atom.family((fieldName: string) =>
+  Atom.make("").pipe(Atom.keepAlive)
+)
+```
+
+### API resource caching
+
+```ts
+const apiResourceFamily = Atom.family((endpoint: string) =>
+  runtimeAtom.atom(
+    Effect.gen(function* () {
+      const http = yield* HttpClient
+      return yield* http.get(endpoint)
+    })
+  )
+)
+```

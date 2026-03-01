@@ -1,0 +1,268 @@
+---
+title: Services and layers
+description: Learn how to work with Effect services and layers using Atom.runtime to manage dependencies in your reactive applications.
+---
+
+Effect Atom provides seamless integration with Effect's service and layer system through `Atom.runtime`. This allows you to create atoms that have access to Effect services while maintaining reactive state management.
+
+## Creating a runtime from a layer
+
+Use `Atom.runtime` to create an `AtomRuntime` from an Effect `Layer`. This runtime can then create atoms that have access to the services provided by the layer.
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const getAll = Effect.succeed([
+      { id: "1", name: "Alice" },
+      { id: "2", name: "Bob" },
+      { id: "3", name: "Charlie" },
+    ])
+    return { getAll } as const
+  }),
+}) {}
+
+// Create a `AtomRuntime` from a `Layer`.
+//
+//         ┌─── Atom.AtomRuntime<Users>
+//         ▼
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// You can then use the `AtomRuntime` to make atoms that use the services from the `Layer`.
+const usersAtom = runtimeAtom.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAll
+  }),
+)
+```
+
+## Runtime atom methods
+
+An `AtomRuntime` provides several methods for creating specialized atoms:
+
+### atom
+
+Creates a regular atom that has access to the runtime's services:
+
+```ts
+const dataAtom = runtimeAtom.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAll
+  }),
+)
+```
+
+### fn
+
+Creates a function atom with access to services. See the [Functions guide](/guides/functions) for details:
+
+```ts
+const createUserAtom = runtimeAtom.fn(
+  Effect.fnUntraced(function* (name: string) {
+    const users = yield* Users
+    return yield* users.create(name)
+  }),
+)
+```
+
+### pull
+
+Creates a pull atom for streams with access to services. See the [Streams guide](/guides/streams) for details:
+
+```ts
+const userStreamAtom = runtimeAtom.pull(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAllStream()
+  }),
+)
+```
+
+### subscriptionRef
+
+Creates an atom from a `SubscriptionRef` with access to services:
+
+```ts
+const refAtom = runtimeAtom.subscriptionRef(
+  Effect.gen(function* () {
+    const service = yield* MyService
+    return service.subscriptionRef
+  }),
+)
+```
+
+### subscribable
+
+Creates an atom from a `Subscribable` with access to services:
+
+```ts
+const subscribableAtom = runtimeAtom.subscribable(
+  Effect.gen(function* () {
+    const service = yield* MyService
+    return service.subscribable
+  }),
+)
+```
+
+## Adding global layers
+
+You can add global layers to all runtimes, which is useful for setting up tracers, loggers, config providers, and other infrastructure:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { ConfigProvider, Layer } from "effect"
+
+Atom.runtime.addGlobalLayer(
+  Layer.setConfigProvider(ConfigProvider.fromJson(import.meta.env)),
+)
+```
+
+<Note>
+Global layers are automatically provided to all `AtomRuntime` instances created with `Atom.runtime`.
+</Note>
+
+## Working with multiple services
+
+You can compose multiple layers together to create a runtime with multiple services:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Layer } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const findById = (id: string) => Effect.succeed({ id, name: "John Doe" })
+    return { findById } as const
+  }),
+}) {}
+
+class Posts extends Effect.Service<Posts>()("app/Posts", {
+  effect: Effect.gen(function* () {
+    const findByUserId = (userId: string) =>
+      Effect.succeed([{ id: "1", title: "Post 1", userId }])
+    return { findByUserId } as const
+  }),
+}) {}
+
+// Compose layers together
+const AppLayer = Layer.mergeAll(Users.Default, Posts.Default)
+
+const runtimeAtom = Atom.runtime(AppLayer)
+
+const userPostsAtom = runtimeAtom.atom(
+  Effect.gen(function* (get: Atom.Context) {
+    const users = yield* Users
+    const posts = yield* Posts
+    
+    const user = yield* users.findById("1")
+    const userPosts = yield* posts.findByUserId(user.id)
+    
+    return { user, posts: userPosts }
+  }),
+)
+```
+
+## Runtime factory
+
+The `Atom.runtime` function is actually a factory that manages layer memoization. This ensures that services are only created once and shared across atoms:
+
+```ts
+interface RuntimeFactory {
+  <R, E>(
+    create:
+      | Layer.Layer<R, E, AtomRegistry | Reactivity.Reactivity>
+      | ((get: Context) => Layer.Layer<R, E, AtomRegistry | Reactivity.Reactivity>)
+  ): AtomRuntime<R, E>
+  readonly memoMap: Layer.MemoMap
+  readonly addGlobalLayer: <A, E>(layer: Layer.Layer<A, E, AtomRegistry | Reactivity.Reactivity>) => void
+  readonly withReactivity: (
+    keys: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+  ) => <A extends Atom<any>>(atom: A) => A
+}
+```
+
+<Tip>
+You can create custom runtime factories with different memoization strategies using `Atom.context({ memoMap })`.
+</Tip>
+
+## Using services in React components
+
+When using atoms with services in React, the runtime is automatically managed:
+
+```tsx
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const getAll = Effect.succeed([
+      { id: "1", name: "Alice" },
+      { id: "2", name: "Bob" },
+    ])
+    return { getAll } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(Users.Default)
+
+const usersAtom = runtimeAtom.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.getAll
+  }),
+)
+
+function UsersList() {
+  const result = useAtomValue(usersAtom)
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess((users) => (
+      <ul>
+        {users.map((user) => (
+          <li key={user.id}>{user.name}</li>
+        ))}
+      </ul>
+    ))
+    .render()
+}
+```
+
+## Error handling
+
+Services can fail, and these failures are captured in the `Result` type:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class UserNotFound {
+  readonly _tag = "UserNotFound"
+  constructor(readonly id: string) {}
+}
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const findById = (id: string) =>
+      Effect.fail(new UserNotFound(id))
+    return { findById } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// The error type is included in the Result
+//        ┌─── Atom.Atom<Result.Result<User, UserNotFound>>
+//        ▼
+const userAtom = runtimeAtom.atom(
+  Effect.gen(function* () {
+    const users = yield* Users
+    return yield* users.findById("1")
+  }),
+)
+```

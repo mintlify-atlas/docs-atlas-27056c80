@@ -1,0 +1,487 @@
+---
+title: Optimistic updates
+description: Implement instant UI feedback with Atom.optimistic and Atom.optimisticFn
+---
+
+## Overview
+
+Optimistic updates provide instant feedback to users by updating the UI immediately, before the server confirms the change. Effect Atom provides `Atom.optimistic` and `Atom.optimisticFn` to implement this pattern with automatic rollback on errors.
+
+<Note>
+Optimistic updates are essential for responsive UIs in applications with network latency. They make your app feel instant while maintaining data consistency.
+</Note>
+
+## Basic concept
+
+The optimistic update flow:
+
+1. User triggers an action (e.g., clicks "Like")
+2. UI updates immediately with the optimistic value
+3. Request is sent to the server
+4. On success: UI keeps the optimistic value
+5. On failure: UI rolls back to the previous value
+
+## Using Atom.optimistic
+
+`Atom.optimistic` wraps an atom to enable optimistic updates:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+// Regular atom
+const countAtom = Atom.make(0)
+
+// Wrap with optimistic behavior
+const optimisticCountAtom = countAtom.pipe(Atom.optimistic)
+
+// Type: Writable<number, Atom<Result.Result<number, unknown>>>
+```
+
+### Type signature
+
+```ts
+function optimistic<A>(
+  self: Atom<A>
+): Writable<A, Atom<Result.Result<A, unknown>>>
+```
+
+The optimistic atom:
+- Reads from the source atom
+- Accepts a "transition atom" as its write value
+- Displays optimistic values while transitions are pending
+- Reverts to the source value when transitions complete
+
+## Using Atom.optimisticFn
+
+`Atom.optimisticFn` creates a function that performs optimistic updates:
+
+<CodeGroup>
+
+```ts Basic example
+import { Atom, Result } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const countAtom = Atom.make(0)
+const optimisticCountAtom = countAtom.pipe(Atom.optimistic)
+
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    // Define how to compute the optimistic value
+    reducer: (current, _update: void) => current + 1,
+    
+    // Define the actual mutation
+    fn: Atom.fn(Effect.fnUntraced(function*() {
+      // Make API call
+      yield* Effect.sleep("1 second")
+      yield* Effect.log("Incremented")
+    }))
+  })
+)
+
+// Usage
+function Counter() {
+  const count = useAtomValue(optimisticCountAtom)
+  const increment = useAtomSet(incrementFn)
+  
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={() => increment()}>Increment</button>
+    </div>
+  )
+}
+```
+
+```ts With Result atoms
+import { Atom, Result } from "@effect-atom/atom-react"
+import { Effect, Layer } from "effect"
+
+const runtime = Atom.runtime(Layer.empty)
+
+const countAtom = Atom.make(Effect.succeed(0))
+const optimisticCountAtom = countAtom.pipe(Atom.optimistic)
+
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    // Reducer works with Result values
+    reducer: (current, _update: void) =>
+      Result.success(Result.getOrElse(current, () => 0) + 1),
+    
+    fn: runtime.fn(Effect.fnUntraced(function*() {
+      yield* Effect.sleep("1 second")
+      yield* Effect.log("Incremented")
+    }))
+  })
+)
+```
+
+</CodeGroup>
+
+### Type signature
+
+```ts
+function optimisticFn<A, W, XA, XE, OW = void>(
+  self: Writable<A, Atom<Result.Result<W, unknown>>>,
+  options: {
+    readonly reducer: (current: A, update: OW) => W
+    readonly fn:
+      | AtomResultFn<OW, XA, XE>
+      | ((set: (result: W) => void) => AtomResultFn<OW, XA, XE>)
+  }
+): AtomResultFn<OW, XA, XE>
+```
+
+**Parameters:**
+- **`reducer`**: Function that computes the optimistic value from the current value and update
+- **`fn`**: The actual mutation function, or a factory that receives a setter for intermediate updates
+
+## Complete example with API
+
+<CodeGroup>
+
+```tsx Counter with API
+import { AtomHttpApi, Result, useAtomSet, useAtomValue } from "@effect-atom/atom-react"
+import { FetchHttpClient, HttpApi, HttpApiEndpoint, HttpApiGroup } from "@effect/platform"
+import { Atom } from "@effect-atom/atom"
+import { Schema } from "effect"
+
+// Define API
+class Api extends HttpApi.make("api").add(
+  HttpApiGroup.make("counter").add(
+    HttpApiEndpoint.get("count", "/count")
+      .addSuccess(Schema.Number)
+  ).add(
+    HttpApiEndpoint.post("increment", "/increment")
+      .addSuccess(Schema.Number)
+  )
+) {}
+
+class CountClient extends AtomHttpApi.Tag<CountClient>()("CountClient", {
+  api: Api,
+  httpClient: FetchHttpClient.layer,
+  baseUrl: "http://localhost:3000"
+}) {}
+
+// Create atoms
+const countAtom = CountClient.query("counter", "count", {
+  reactivityKeys: ["count"]
+})
+
+const optimisticCountAtom = countAtom.pipe(Atom.optimistic)
+
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, _update: void) => {
+      const count = Result.getOrElse(current, () => 0)
+      return Result.success(count + 1)
+    },
+    fn: CountClient.mutation("counter", "increment")
+  })
+)
+
+// Component
+function Counter() {
+  const count = useAtomValue(optimisticCountAtom)
+  const increment = useAtomSet(incrementFn)
+  
+  return Result.builder(count)
+    .onSuccess((value, { waiting }) => (
+      <div>
+        <p>
+          Count: {value}
+          {waiting && <span> (saving...)</span>}
+        </p>
+        <button onClick={() => increment({ payload: void 0, reactivityKeys: ["count"] })}>
+          Increment
+        </button>
+      </div>
+    ))
+    .render()
+}
+```
+
+```tsx Like button
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+interface Post {
+  id: string
+  likes: number
+  isLiked: boolean
+}
+
+const postAtom = Atom.make<Result.Result<Post>>(/* ... */)
+const optimisticPostAtom = postAtom.pipe(Atom.optimistic)
+
+const toggleLikeFn = optimisticPostAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, _update: void) => {
+      const post = Result.getOrThrow(current)
+      return Result.success({
+        ...post,
+        likes: post.isLiked ? post.likes - 1 : post.likes + 1,
+        isLiked: !post.isLiked
+      })
+    },
+    fn: Atom.fn(Effect.fnUntraced(function*() {
+      // API call to toggle like
+      yield* Effect.sleep("500 millis")
+    }))
+  })
+)
+
+function LikeButton({ postId }: { postId: string }) {
+  const post = useAtomValue(optimisticPostAtom)
+  const toggleLike = useAtomSet(toggleLikeFn)
+  
+  return Result.builder(post)
+    .onSuccess((post) => (
+      <button onClick={() => toggleLike()}>
+        {post.isLiked ? "Unlike" : "Like"} ({post.likes})
+      </button>
+    ))
+    .render()
+}
+```
+
+</CodeGroup>
+
+## Intermediate updates
+
+You can update the optimistic value during the mutation:
+
+```ts
+const uploadFn = optimisticFileAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, file: File) => ({
+      ...current,
+      status: "uploading",
+      progress: 0
+    }),
+    fn: (set) =>
+      Atom.fn(Effect.fnUntraced(function*(file: File) {
+        // Update progress during upload
+        const upload = uploadFile(file, (progress) => {
+          set({
+            status: "uploading",
+            progress
+          })
+        })
+        
+        yield* upload
+      }))
+  })
+)
+```
+
+## Error handling
+
+When the mutation fails, the optimistic value is automatically rolled back:
+
+```tsx
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, _update: void) => current + 1,
+    fn: Atom.fn(Effect.fnUntraced(function*() {
+      yield* Effect.sleep("1 second")
+      // Simulate error
+      yield* Effect.fail("Network error")
+    }))
+  })
+)
+
+function Counter() {
+  const count = useAtomValue(optimisticCountAtom)
+  const [error, setError] = useState<string>()
+  const increment = useAtomSet(incrementFn, { mode: "promiseExit" })
+  
+  const handleIncrement = async () => {
+    const exit = await increment()
+    if (Exit.isFailure(exit)) {
+      setError(Cause.pretty(exit.cause))
+    }
+  }
+  
+  return (
+    <div>
+      <p>Count: {count}</p>
+      {error && <p style={{ color: "red" }}>{error}</p>}
+      <button onClick={handleIncrement}>Increment</button>
+    </div>
+  )
+}
+```
+
+## Working with non-Result atoms
+
+Optimistic updates work with regular atoms too:
+
+```ts
+const countAtom = Atom.make(0)
+const optimisticCountAtom = countAtom.pipe(Atom.optimistic)
+
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    // Reducer works directly with the value
+    reducer: (current, _update: void) => current + 1,
+    fn: Atom.fn(Effect.fnUntraced(function*() {
+      yield* Effect.sleep("1 second")
+    }))
+  })
+)
+```
+
+## Synchronous mutations
+
+For synchronous mutations, the optimistic and final values converge immediately:
+
+```ts
+const incrementFn = optimisticCountAtom.pipe(
+  Atom.optimisticFn({
+    reducer: (current, update: number) => update,
+    fn: Atom.fn(() => {
+      // Synchronous update
+      i = 2
+      return Effect.void
+    })
+  })
+)
+```
+
+## Best practices
+
+<Steps>
+
+### Use for user-initiated actions
+
+Optimistic updates work best for explicit user actions (clicks, form submissions):
+
+```tsx
+// Good: User clicks button
+<button onClick={() => likePost()}>Like</button>
+
+// Avoid: Automatic actions that users don't control
+```
+
+### Provide visual feedback
+
+Show when an optimistic update is pending:
+
+```tsx
+Result.builder(post)
+  .onSuccess((post, { waiting }) => (
+    <div>
+      <h1>{post.title}</h1>
+      {waiting && <span>Saving...</span>}
+    </div>
+  ))
+  .render()
+```
+
+### Handle failures gracefully
+
+Always handle mutation failures and inform the user:
+
+```tsx
+const handleAction = async () => {
+  const exit = await mutate()
+  if (Exit.isFailure(exit)) {
+    toast.error("Action failed. Please try again.")
+  }
+}
+```
+
+### Keep reducers pure
+
+The reducer should be a pure function:
+
+```ts
+// Good
+reducer: (current, update) => current + update
+
+// Bad: side effects
+reducer: (current, update) => {
+  console.log("updating") // Side effect!
+  return current + update
+}
+```
+
+### Test both success and failure paths
+
+Ensure your UI handles both optimistic success and rollback:
+
+```ts
+it("rolls back on failure", async () => {
+  const r = Registry.make()
+  
+  expect(r.get(optimisticAtom)).toEqual(0)
+  r.set(incrementFn, void 0)
+  
+  // Optimistic value
+  expect(r.get(optimisticAtom)).toEqual(1)
+  
+  // Simulate failure
+  latch.unsafeOpen()
+  await Effect.runPromise(Effect.yieldNow())
+  
+  // Rolled back
+  expect(r.get(optimisticAtom)).toEqual(0)
+})
+```
+
+</Steps>
+
+## Advanced patterns
+
+### Multiple optimistic updates
+
+Stack multiple optimistic updates:
+
+```ts
+const optimisticAtom = sourceAtom.pipe(Atom.optimistic, Atom.keepAlive)
+
+const fn1 = optimisticAtom.pipe(Atom.optimisticFn({ /* ... */ }))
+const fn2 = optimisticAtom.pipe(Atom.optimisticFn({ /* ... */ }))
+
+// Both mutations can be in-flight simultaneously
+setFn1(void 0)
+setFn2(void 0)
+```
+
+### Conditional optimistic updates
+
+Only apply optimistic updates in certain conditions:
+
+```ts
+reducer: (current, update) => {
+  if (current.status === "readonly") {
+    return current // No optimistic update
+  }
+  return { ...current, ...update }
+}
+```
+
+### Pessimistic updates
+
+For critical operations, skip optimistic updates:
+
+```ts
+// Use regular mutations without Atom.optimistic
+const deleteFn = Atom.fn(Effect.fnUntraced(function*() {
+  yield* deleteUser()
+  // Only update UI after confirmation
+}))
+```
+
+## Comparison with other patterns
+
+| Pattern | UI Update | Rollback | Use Case |
+|---------|-----------|----------|----------|
+| Optimistic | Immediate | Automatic | User actions, low error rate |
+| Pessimistic | After success | N/A | Critical operations, high error rate |
+| Streaming | Progressive | N/A | Long-running operations |
+
+## Resources
+
+- [Optimistic UI patterns](https://www.nngroup.com/articles/optimistic-ui/)
+- [Effect documentation](https://effect.website)

@@ -1,0 +1,818 @@
+---
+title: Atom
+description: Complete API reference for the Atom module - create and manage reactive state with Effect integration
+---
+
+The `Atom` module provides the core reactive state management primitives for Effect Atom. It enables you to create reactive values that automatically track dependencies and propagate updates.
+
+## Type definitions
+
+### Atom
+
+```typescript
+interface Atom<A> extends Pipeable, Inspectable {
+  readonly [TypeId]: TypeId
+  readonly keepAlive: boolean
+  readonly lazy: boolean
+  readonly read: (get: Context) => A
+  readonly refresh?: (f: <A>(atom: Atom<A>) => void) => void
+  readonly label?: readonly [name: string, stack: string]
+  readonly idleTTL?: number
+}
+```
+
+A reactive value that can be read and automatically tracks dependencies.
+
+### Writable
+
+```typescript
+interface Writable<R, W = R> extends Atom<R> {
+  readonly [WritableTypeId]: WritableTypeId
+  readonly write: (ctx: WriteContext<R>, value: W) => void
+}
+```
+
+An atom that can also be written to, allowing both read and write operations.
+
+### Context
+
+```typescript
+interface Context {
+  <A>(atom: Atom<A>): A
+  get<A>(this: Context, atom: Atom<A>): A
+  result<A, E>(this: Context, atom: Atom<Result.Result<A, E>>, options?: {
+    readonly suspendOnWaiting?: boolean | undefined
+  }): Effect.Effect<A, E>
+  once<A>(this: Context, atom: Atom<A>): A
+  mount<A>(this: Context, atom: Atom<A>): void
+  refresh<A>(this: Context, atom: Atom<A>): void
+  set<R, W>(this: Context, atom: Writable<R, W>, value: W): void
+  subscribe<A>(this: Context, atom: Atom<A>, f: (_: A) => void, options?: {
+    readonly immediate?: boolean
+  }): void
+  readonly registry: Registry.Registry
+}
+```
+
+The context available when reading atom values, providing access to other atoms and lifecycle hooks.
+
+## Creation functions
+
+### make
+
+Create an atom from various sources - effects, streams, functions, or static values.
+
+```typescript
+const make: {
+  <A, E>(create: (get: Context) => Effect.Effect<A, E, Scope.Scope | AtomRegistry>, options?: {
+    readonly initialValue?: A
+  }): Atom<Result.Result<A, E>>
+  <A, E>(effect: Effect.Effect<A, E, Scope.Scope | AtomRegistry>, options?: {
+    readonly initialValue?: A
+  }): Atom<Result.Result<A, E>>
+  <A>(create: (get: Context) => A): Atom<A>
+  <A>(initialValue: A): Writable<A>
+}
+```
+
+<ParamField path="create" type="function | Effect | Stream | value">
+  The source for the atom value. Can be:
+  - A function that returns a value
+  - A function that returns an Effect
+  - A function that returns a Stream
+  - An Effect directly
+  - A Stream directly
+  - A static value (creates a writable atom)
+</ParamField>
+
+<ParamField path="options.initialValue" type="A">
+  Optional initial value to display before async operations complete
+</ParamField>
+
+**Example - Static value**
+
+```typescript
+import { Atom } from "@effect-rx/rx"
+
+const countAtom = Atom.make(0)
+// Type: Writable<number>
+```
+
+**Example - Derived value**
+
+```typescript
+const doubledAtom = Atom.make((get) => {
+  const count = get(countAtom)
+  return count * 2
+})
+```
+
+**Example - From Effect**
+
+```typescript
+const userAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* HttpClient.get("/api/user")
+    return yield* response.json
+  }),
+  { initialValue: null }
+)
+// Type: Atom<Result.Result<User, HttpError>>
+```
+
+**Example - From Stream**
+
+```typescript
+const messagesAtom = Atom.make(
+  Stream.fromEventSource("/api/events")
+)
+```
+
+### runtime
+
+The default runtime factory for creating atoms with Effect services.
+
+```typescript
+const runtime: RuntimeFactory
+```
+
+**Example**
+
+```typescript
+const MyRuntime = Atom.runtime(
+  Layer.mergeAll(
+    HttpClient.layer,
+    DatabaseLayer
+  )
+)
+
+const dataAtom = MyRuntime.atom(
+  Effect.gen(function* () {
+    const db = yield* Database
+    return yield* db.query("SELECT * FROM users")
+  })
+)
+```
+
+### family
+
+Create parameterized atoms that maintain separate instances for each parameter value.
+
+```typescript
+const family: <Arg, T extends object>(
+  f: (arg: Arg) => T
+) => (arg: Arg) => T
+```
+
+<ParamField path="f" type="(arg: Arg) => T">
+  Function that creates an atom for each unique argument
+</ParamField>
+
+**Example**
+
+```typescript
+const userAtom = Atom.family((userId: string) =>
+  Atom.make(
+    Effect.flatMap(
+      HttpClient.get(`/api/users/${userId}`),
+      (res) => res.json
+    )
+  )
+)
+
+// Each userId gets its own atom instance
+const user1 = userAtom("user-1")
+const user2 = userAtom("user-2")
+```
+
+### fn
+
+Create an atom that represents a function which can be called with arguments.
+
+```typescript
+const fn: {
+  <Arg>(): <E, A>(
+    fn: (arg: Arg, get: FnContext) => Effect.Effect<A, E, Scope.Scope | AtomRegistry>,
+    options?: {
+      readonly initialValue?: A | undefined
+      readonly concurrent?: boolean | undefined
+    }
+  ) => AtomResultFn<Arg, A, E>
+  <E, A, Arg = void>(
+    fn: (arg: Arg, get: FnContext) => Effect.Effect<A, E, Scope.Scope | AtomRegistry>,
+    options?: {
+      readonly initialValue?: A | undefined
+      readonly concurrent?: boolean | undefined
+    }
+  ): AtomResultFn<Arg, A, E>
+}
+```
+
+<ParamField path="fn" type="function">
+  The function to execute, receiving the argument and context
+</ParamField>
+
+<ParamField path="options.initialValue" type="A">
+  Initial value before first execution
+</ParamField>
+
+<ParamField path="options.concurrent" type="boolean">
+  Whether to allow concurrent executions
+</ParamField>
+
+**Example**
+
+```typescript
+const searchFn = Atom.fn((query: string, get) =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient
+    const response = yield* client.get(`/api/search?q=${query}`)
+    return yield* response.json
+  })
+)
+
+// In a component
+registry.set(searchFn, "typescript")
+const result = registry.get(searchFn) // Result.Result<SearchResults, HttpError>
+```
+
+### pull
+
+Create an atom that pulls values from a stream on demand.
+
+```typescript
+const pull: <A, E>(
+  create: ((get: Context) => Stream.Stream<A, E, AtomRegistry>) | Stream.Stream<A, E, AtomRegistry>,
+  options?: {
+    readonly disableAccumulation?: boolean | undefined
+  }
+) => Writable<PullResult<A, E>, void>
+```
+
+<ParamField path="create" type="Stream | function">
+  A stream or function that returns a stream
+</ParamField>
+
+<ParamField path="options.disableAccumulation" type="boolean">
+  If true, only returns new items since last pull instead of accumulating
+</ParamField>
+
+**Example**
+
+```typescript
+const messagesPull = Atom.pull(
+  Stream.fromEventSource("/api/messages")
+)
+
+// Pull next batch of messages
+registry.set(messagesPull, undefined)
+const result = registry.get(messagesPull)
+// { done: boolean, items: NonEmptyArray<Message> }
+```
+
+### subscriptionRef
+
+Create an atom from an Effect SubscriptionRef.
+
+```typescript
+const subscriptionRef: {
+  <A>(ref: SubscriptionRef.SubscriptionRef<A> | ((get: Context) => SubscriptionRef.SubscriptionRef<A>)): Writable<A>
+  <A, E>(
+    effect:
+      | Effect.Effect<SubscriptionRef.SubscriptionRef<A>, E, Scope.Scope | AtomRegistry>
+      | ((get: Context) => Effect.Effect<SubscriptionRef.SubscriptionRef<A>, E, Scope.Scope | AtomRegistry>)
+  ): Writable<Result.Result<A, E>, A>
+}
+```
+
+**Example**
+
+```typescript
+const stateAtom = Atom.subscriptionRef(
+  Effect.map(
+    SubscriptionRef.make(0),
+    (ref) => ref
+  )
+)
+```
+
+### subscribable
+
+Create an atom from an Effect Subscribable.
+
+```typescript
+const subscribable: {
+  <A, E>(
+    ref: Subscribable.Subscribable<A, E> | ((get: Context) => Subscribable.Subscribable<A, E>)
+  ): Atom<A>
+  <A, E, E1>(
+    effect:
+      | Effect.Effect<Subscribable.Subscribable<A, E1>, E, Scope.Scope | AtomRegistry>
+      | ((get: Context) => Effect.Effect<Subscribable.Subscribable<A, E1>, E, Scope.Scope | AtomRegistry>)
+  ): Atom<Result.Result<A, E | E1>>
+}
+```
+
+## Transformation functions
+
+### map
+
+Transform the value of an atom.
+
+```typescript
+const map: {
+  <R extends Atom<any>, B>(
+    f: (_: Type<R>) => B
+  ): (self: R) => [R] extends [Writable<infer _, infer RW>] ? Writable<B, RW> : Atom<B>
+  <R extends Atom<any>, B>(
+    self: R,
+    f: (_: Type<R>) => B
+  ): [R] extends [Writable<infer _, infer RW>] ? Writable<B, RW> : Atom<B>
+}
+```
+
+<ParamField path="self" type="Atom<A>">
+  The source atom
+</ParamField>
+
+<ParamField path="f" type="(value: A) => B">
+  Transform function
+</ParamField>
+
+**Example**
+
+```typescript
+const countAtom = Atom.make(5)
+const doubledAtom = Atom.map(countAtom, (n) => n * 2)
+// or with pipe
+const doubledAtom2 = countAtom.pipe(
+  Atom.map((n) => n * 2)
+)
+```
+
+### transform
+
+Transform an atom with full access to the context.
+
+```typescript
+const transform: {
+  <R extends Atom<any>, B>(
+    f: (get: Context) => B
+  ): (self: R) => [R] extends [Writable<infer _, infer RW>] ? Writable<B, RW> : Atom<B>
+  <R extends Atom<any>, B>(
+    self: R,
+    f: (get: Context) => B
+  ): [R] extends [Writable<infer _, infer RW>] ? Writable<B, RW> : Atom<B>
+}
+```
+
+<ParamField path="self" type="Atom<A>">
+  The source atom
+</ParamField>
+
+<ParamField path="f" type="(get: Context) => B">
+  Transform function with context access
+</ParamField>
+
+**Example**
+
+```typescript
+const transformedAtom = Atom.transform(sourceAtom, (get) => {
+  const value = get(sourceAtom)
+  const other = get(otherAtom)
+  return value + other
+})
+```
+
+### mapResult
+
+Map over the success value of a Result atom.
+
+```typescript
+const mapResult: {
+  <R extends Atom<Result.Result<any, any>>, B>(
+    f: (_: Result.Result.Success<Type<R>>) => B
+  ): (self: R) => Writable<Result.Result<B, Result.Result.Failure<Type<R>>>, RW> | Atom<...>
+}
+```
+
+**Example**
+
+```typescript
+const userAtom = Atom.make(fetchUser())
+const userNameAtom = Atom.mapResult(userAtom, (user) => user.name)
+```
+
+### debounce
+
+Debounce atom updates by a specified duration.
+
+```typescript
+const debounce: {
+  (duration: Duration.DurationInput): <A extends Atom<any>>(self: A) => WithoutSerializable<A>
+  <A extends Atom<any>>(self: A, duration: Duration.DurationInput): WithoutSerializable<A>
+}
+```
+
+<ParamField path="duration" type="Duration.DurationInput">
+  The debounce duration (e.g., "500 millis", 500)
+</ParamField>
+
+**Example**
+
+```typescript
+const searchInput = Atom.make("")
+const debouncedSearch = Atom.debounce(searchInput, "300 millis")
+```
+
+### withFallback
+
+Provide a fallback atom for when the primary atom is in Initial state.
+
+```typescript
+const withFallback: {
+  <E2, A2>(
+    fallback: Atom<Result.Result<A2, E2>>
+  ): <R extends Atom<Result.Result<any, any>>>(self: R) => Atom<Result.Result<...>>
+}
+```
+
+**Example**
+
+```typescript
+const primaryData = Atom.make(fetchPrimaryData())
+const cachedData = Atom.make(fetchFromCache())
+const dataWithFallback = Atom.withFallback(primaryData, cachedData)
+```
+
+## Lifecycle management
+
+### keepAlive
+
+Prevent an atom from being disposed when it has no subscribers.
+
+```typescript
+const keepAlive: <A extends Atom<any>>(self: A) => A
+```
+
+<ParamField path="self" type="Atom<A>">
+  The atom to keep alive
+</ParamField>
+
+**Example**
+
+```typescript
+const globalState = Atom.keepAlive(
+  Atom.make(loadConfiguration())
+)
+```
+
+### autoDispose
+
+Allow an atom to be disposed when it has no subscribers (reverses keepAlive).
+
+```typescript
+const autoDispose: <A extends Atom<any>>(self: A) => A
+```
+
+**Example**
+
+```typescript
+const temporaryData = Atom.autoDispose(cachedAtom)
+```
+
+### setIdleTTL
+
+Set a time-to-live for the atom after it becomes idle (no subscribers).
+
+```typescript
+const setIdleTTL: {
+  (duration: Duration.DurationInput): <A extends Atom<any>>(self: A) => A
+  <A extends Atom<any>>(self: A, duration: Duration.DurationInput): A
+}
+```
+
+<ParamField path="duration" type="Duration.DurationInput">
+  How long to keep the atom alive after it becomes idle
+</ParamField>
+
+**Example**
+
+```typescript
+const cachedData = Atom.setIdleTTL(
+  Atom.make(fetchData()),
+  "5 minutes"
+)
+```
+
+## Reactivity integration
+
+### withReactivity
+
+Refresh an atom whenever specified keys change in the Reactivity service.
+
+```typescript
+const withReactivity: (
+  keys: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+) => <A extends Atom<any>>(atom: A) => A
+```
+
+<ParamField path="keys" type="Array<unknown> | Record<string, Array<unknown>>">
+  The reactivity keys to watch
+</ParamField>
+
+**Example**
+
+```typescript
+const userAtom = Atom.withReactivity(["user", userId])(
+  Atom.make(fetchUser(userId))
+)
+```
+
+## Storage integration
+
+### kvs
+
+Create an atom backed by a KeyValueStore.
+
+```typescript
+const kvs: <A>(options: {
+  readonly runtime: AtomRuntime<KeyValueStore.KeyValueStore, any>
+  readonly key: string
+  readonly schema: Schema.Schema<A, any>
+  readonly defaultValue: LazyArg<A>
+}) => Writable<A>
+```
+
+<ParamField path="options.runtime" type="AtomRuntime">
+  Runtime that provides KeyValueStore
+</ParamField>
+
+<ParamField path="options.key" type="string">
+  Storage key
+</ParamField>
+
+<ParamField path="options.schema" type="Schema">
+  Schema for encoding/decoding
+</ParamField>
+
+<ParamField path="options.defaultValue" type="() => A">
+  Default value if key doesn't exist
+</ParamField>
+
+**Example**
+
+```typescript
+const userPrefs = Atom.kvs({
+  runtime: MyRuntime,
+  key: "user-preferences",
+  schema: Schema.Struct({
+    theme: Schema.String,
+    locale: Schema.String
+  }),
+  defaultValue: () => ({ theme: "light", locale: "en" })
+})
+```
+
+### searchParam
+
+Create an atom that syncs with a URL search parameter.
+
+```typescript
+const searchParam: <A = never, I extends string = never>(
+  name: string,
+  options?: {
+    readonly schema?: Schema.Schema<A, I>
+  }
+) => Writable<[A] extends [never] ? string : Option.Option<A>>
+```
+
+<ParamField path="name" type="string">
+  The URL parameter name
+</ParamField>
+
+<ParamField path="options.schema" type="Schema">
+  Optional schema for parsing/encoding the value
+</ParamField>
+
+**Example**
+
+```typescript
+// String parameter
+const queryAtom = Atom.searchParam("q")
+
+// Typed parameter
+const pageAtom = Atom.searchParam("page", {
+  schema: Schema.NumberFromString
+})
+
+registry.set(pageAtom, Option.some(2))
+// Updates URL to ?page=2
+```
+
+## Focus management
+
+### windowFocusSignal
+
+An atom that increments when the window gains focus.
+
+```typescript
+const windowFocusSignal: Atom<number>
+```
+
+### refreshOnWindowFocus
+
+Refresh an atom whenever the window gains focus.
+
+```typescript
+const refreshOnWindowFocus: <A extends Atom<any>>(self: A) => WithoutSerializable<A>
+```
+
+**Example**
+
+```typescript
+const liveData = Atom.refreshOnWindowFocus(
+  Atom.make(fetchLiveData())
+)
+```
+
+## Optimistic updates
+
+### optimistic
+
+Create an optimistic version of an atom that shows pending updates immediately.
+
+```typescript
+const optimistic: <A>(self: Atom<A>) => Writable<A, Atom<Result.Result<A, unknown>>>
+```
+
+**Example**
+
+```typescript
+const dataAtom = Atom.make(fetchData())
+const optimisticData = Atom.optimistic(dataAtom)
+
+// Show update immediately while request is pending
+registry.set(optimisticData, updateFn)
+```
+
+## Batching
+
+### batch
+
+Batch multiple atom updates to trigger subscribers only once.
+
+```typescript
+const batch: (f: () => void) => void
+```
+
+**Example**
+
+```typescript
+Atom.batch(() => {
+  registry.set(atom1, value1)
+  registry.set(atom2, value2)
+  registry.set(atom3, value3)
+})
+// Subscribers are notified once after all updates
+```
+
+## Serialization
+
+### serializable
+
+Mark an atom as serializable for hydration.
+
+```typescript
+const serializable: {
+  <R extends Atom<any>, S extends Schema.Schema<Type<R>, any>>(options: {
+    readonly key: string
+    readonly schema: S
+  }): (self: R) => R & Serializable<S>
+}
+```
+
+<ParamField path="options.key" type="string">
+  Unique serialization key
+</ParamField>
+
+<ParamField path="options.schema" type="Schema">
+  Schema for encoding/decoding
+</ParamField>
+
+**Example**
+
+```typescript
+const userAtom = Atom.serializable(
+  Atom.make(fetchUser()),
+  {
+    key: "current-user",
+    schema: UserSchema
+  }
+)
+```
+
+## Effect conversions
+
+### get
+
+Get an atom's value as an Effect.
+
+```typescript
+const get: <A>(self: Atom<A>) => Effect.Effect<A, never, AtomRegistry>
+```
+
+### set
+
+Set a writable atom's value as an Effect.
+
+```typescript
+const set: {
+  <W>(value: W): <R>(self: Writable<R, W>) => Effect.Effect<void, never, AtomRegistry>
+  <R, W>(self: Writable<R, W>, value: W): Effect.Effect<void, never, AtomRegistry>
+}
+```
+
+### modify
+
+Modify a writable atom and return a value.
+
+```typescript
+const modify: {
+  <R, W, A>(
+    f: (_: R) => [returnValue: A, nextValue: W]
+  ): (self: Writable<R, W>) => Effect.Effect<A, never, AtomRegistry>
+}
+```
+
+### toStream
+
+Convert an atom to a Stream of its values.
+
+```typescript
+const toStream: <A>(self: Atom<A>) => Stream.Stream<A, never, AtomRegistry>
+```
+
+## Utilities
+
+### isAtom
+
+Check if a value is an Atom.
+
+```typescript
+const isAtom: (u: unknown) => u is Atom<any>
+```
+
+### isWritable
+
+Check if an atom is writable.
+
+```typescript
+const isWritable: <R, W>(atom: Atom<R>) => atom is Writable<R, W>
+```
+
+### withLabel
+
+Add a debug label to an atom.
+
+```typescript
+const withLabel: {
+  (name: string): <A extends Atom<any>>(self: A) => A
+  <A extends Atom<any>>(self: A, name: string): A
+}
+```
+
+**Example**
+
+```typescript
+const userAtom = Atom.withLabel(
+  Atom.make(fetchUser()),
+  "current-user"
+)
+```
+
+## Type helpers
+
+### Type
+
+Extract the value type from an Atom.
+
+```typescript
+type Type<T extends Atom<any>> = T extends Atom<infer A> ? A : never
+```
+
+### Success
+
+Extract the success type from a Result Atom.
+
+```typescript
+type Success<T extends Atom<any>> = T extends Atom<Result.Result<infer A, infer _>> ? A : never
+```
+
+### Failure
+
+Extract the error type from a Result Atom.
+
+```typescript
+type Failure<T extends Atom<any>> = T extends Atom<Result.Result<infer _, infer E>> ? E : never
+```

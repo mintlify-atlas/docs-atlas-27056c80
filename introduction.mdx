@@ -1,0 +1,162 @@
+---
+title: Introduction to Effect Atom
+description: A reactive state management library built on Effect, bringing powerful composition, type safety, and async handling to your frontend applications.
+---
+
+Effect Atom is a reactive state management library that brings the power of Effect to frontend applications. It provides a composable, type-safe way to manage both synchronous and asynchronous state with first-class support for React, Vue, and Solid.
+
+## What is Effect Atom?
+
+Effect Atom extends the Effect ecosystem to frontend state management, allowing you to:
+
+- **Manage reactive state** with automatic dependency tracking and updates
+- **Work with async operations** using Effect's powerful error handling and composition
+- **Compose state** from multiple sources with derived atoms
+- **Integrate services** using Effect's dependency injection
+- **Handle side effects** with proper resource cleanup using Scope
+
+## Why Effect Atom?
+
+<CardGroup cols={2}>
+  <Card title="Type-safe by default" icon="shield-check">
+    Built on Effect's type system for complete type safety across sync and async operations
+  </Card>
+  <Card title="Effect integration" icon="layer-group">
+    Use Effect services, layers, and streams directly in your state management
+  </Card>
+  <Card title="Automatic cleanup" icon="broom">
+    Resources are cleaned up automatically when atoms are no longer used
+  </Card>
+  <Card title="Framework agnostic core" icon="cube">
+    Core library works with React, Vue, Solid, or build your own adapter
+  </Card>
+</CardGroup>
+
+## Key features
+
+### Reactive primitives
+
+Create atoms that automatically track dependencies and trigger updates:
+
+```tsx
+import { Atom } from "@effect-atom/atom-react"
+
+const countAtom = Atom.make(0)
+const doubleAtom = Atom.map(countAtom, (count) => count * 2)
+```
+
+### Effect integration
+
+Work seamlessly with Effect services and async operations:
+
+```tsx
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class UsersService extends Effect.Service<UsersService>()("app/Users", {
+  effect: Effect.succeed({
+    getAll: Effect.succeed([{ id: "1", name: "Alice" }])
+  })
+}) {}
+
+const runtime = Atom.runtime(UsersService.Default)
+const usersAtom = runtime.atom(
+  Effect.gen(function* () {
+    const users = yield* UsersService
+    return yield* users.getAll
+  })
+)
+```
+
+### Result type for async state
+
+Handle loading, error, and success states elegantly:
+
+```tsx
+import { Result } from "@effect-atom/atom-react"
+
+function UserList() {
+  const result = useAtomValue(usersAtom)
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Loading...</div>)
+    .onFailure((cause) => <div>Error: {Cause.pretty(cause)}</div>)
+    .onSuccess((users) => (
+      <ul>
+        {users.map(user => <li key={user.id}>{user.name}</li>)}
+      </ul>
+    ))
+    .render()
+}
+```
+
+### Streams and subscriptions
+
+Work with Effect streams for real-time data:
+
+```tsx
+import { Atom } from "@effect-atom/atom-react"
+import { Schedule, Stream } from "effect"
+
+const tickAtom = Atom.make(
+  Stream.fromSchedule(Schedule.spaced(1000))
+)
+```
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first counter in 5 minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install Effect Atom for your framework
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/atoms">
+    Learn about atoms, derivation, and effects
+  </Card>
+  <Card title="API reference" icon="code" href="/api/atom">
+    Explore the full API documentation
+  </Card>
+</CardGroup>
+
+## Example: Simple counter
+
+Here's a complete counter example showing the basics:
+
+```tsx
+import { Atom, useAtomValue, useAtomSet } from "@effect-atom/atom-react"
+
+const countAtom = Atom.make(0).pipe(Atom.keepAlive)
+
+function Counter() {
+  const count = useAtomValue(countAtom)
+  return <h1>{count}</h1>
+}
+
+function CounterButton() {
+  const setCount = useAtomSet(countAtom)
+  return (
+    <button onClick={() => setCount((count) => count + 1)}>
+      Increment
+    </button>
+  )
+}
+
+function App() {
+  return (
+    <div>
+      <Counter />
+      <CounterButton />
+    </div>
+  )
+}
+```
+
+## Community
+
+Effect Atom is part of the Effect ecosystem:
+
+- [Effect Documentation](https://effect.website/docs)
+- [GitHub Repository](https://github.com/tim-smart/effect-atom)
+- [Effect Discord](https://discord.gg/effect-ts)

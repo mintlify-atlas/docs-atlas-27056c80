@@ -1,0 +1,377 @@
+---
+title: "AtomHttpApi"
+description: "HTTP API client integration for Effect Atom with reactive query and mutation support"
+---
+
+## Overview
+
+AtomHttpApi provides a reactive HTTP API client integration for Effect Atom, built on top of `@effect/platform`'s HttpApi. It enables you to create type-safe HTTP clients with automatic reactivity, caching, and state management.
+
+## Tag
+
+Creates an AtomHttpApi client tag with reactive query and mutation methods.
+
+<ParamField path="id" type="string" required>
+  Unique identifier for the HTTP API client service.
+</ParamField>
+
+<ParamField path="options" type="object" required>
+  Configuration options for the HTTP API client.
+  
+  <Expandable title="properties">
+    <ParamField path="api" type="HttpApi" required>
+      The HTTP API definition from `@effect/platform/HttpApi`.
+    </ParamField>
+    
+    <ParamField path="httpClient" type="Layer.Layer" required>
+      Layer providing the HttpClient and any required middleware or context.
+    </ParamField>
+    
+    <ParamField path="transformClient" type="(client: HttpClient) => HttpClient">
+      Optional function to transform the HTTP client before use.
+    </ParamField>
+    
+    <ParamField path="transformResponse" type="(effect: Effect) => Effect">
+      Optional function to transform response effects.
+    </ParamField>
+    
+    <ParamField path="baseUrl" type="URL | string">
+      Base URL for all API requests.
+    </ParamField>
+    
+    <ParamField path="runtime" type="RuntimeFactory">
+      Custom runtime factory for the atom client. Defaults to `Atom.runtime`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="AtomHttpApiClient" type="object">
+  A tagged HTTP API client with reactive methods.
+  
+  <Expandable title="properties">
+    <ResponseField name="Tag" type="Context.Tag">
+      Context tag for dependency injection.
+    </ResponseField>
+    
+    <ResponseField name="layer" type="Layer.Layer">
+      Effect Layer for providing the HTTP API client.
+    </ResponseField>
+    
+    <ResponseField name="runtime" type="AtomRuntime">
+      Runtime instance for executing effects.
+    </ResponseField>
+    
+    <ResponseField name="query" type="function">
+      Creates a reactive atom for HTTP queries with caching support.
+    </ResponseField>
+    
+    <ResponseField name="mutation" type="function">
+      Creates a mutation function for HTTP requests with reactivity integration.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```typescript
+import * as HttpApi from "@effect/platform/HttpApi"
+import * as HttpApiClient from "@effect/platform/HttpApiClient"
+import * as AtomHttpApi from "@effect-atom/atom/AtomHttpApi"
+import * as Layer from "effect/Layer"
+
+// Define your HTTP API
+const MyApi = HttpApi.make("MyApi").pipe(
+  HttpApi.addGroup(
+    HttpApiGroup.make("Users").pipe(
+      HttpApiGroup.addEndpoint(
+        HttpApiEndpoint.get("getUser", "/users/:id").pipe(
+          HttpApiEndpoint.setPath(Schema.Struct({ id: Schema.String })),
+          HttpApiEndpoint.setSuccess(Schema.Struct({ 
+            id: Schema.String, 
+            name: Schema.String 
+          }))
+        )
+      )
+    )
+  )
+)
+
+// Create the HTTP API client
+const MyApiClient = AtomHttpApi.Tag<MyApiClient>()("MyApiClient", {
+  api: MyApi,
+  httpClient: HttpClient.layer,
+  baseUrl: "https://api.example.com"
+})
+```
+
+## query
+
+Creates a reactive atom that executes an HTTP query. The atom automatically caches results and supports reactivity keys for cache invalidation.
+
+<ParamField path="group" type="GroupName" required>
+  The API group name containing the endpoint.
+</ParamField>
+
+<ParamField path="endpoint" type="Name" required>
+  The endpoint name to query.
+</ParamField>
+
+<ParamField path="request" type="object" required>
+  Request parameters for the endpoint.
+  
+  <Expandable title="properties">
+    <ParamField path="path" type="object">
+      Path parameters for the endpoint URL.
+    </ParamField>
+    
+    <ParamField path="urlParams" type="object">
+      Query string parameters.
+    </ParamField>
+    
+    <ParamField path="payload" type="object">
+      Request body payload.
+    </ParamField>
+    
+    <ParamField path="headers" type="object">
+      HTTP headers for the request.
+    </ParamField>
+    
+    <ParamField path="withResponse" type="boolean">
+      If true, returns both success data and HTTP response as a tuple.
+    </ParamField>
+    
+    <ParamField path="reactivityKeys" type="ReadonlyArray<unknown> | Record<string, ReadonlyArray<unknown>>">
+      Keys for cache invalidation integration with reactive mutations.
+    </ParamField>
+    
+    <ParamField path="timeToLive" type="Duration.DurationInput">
+      Cache duration. Use `Duration.infinity` to keep the atom alive indefinitely.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="atom" type="Atom<Result<Success, Error>>">
+  A reactive atom containing the query result.
+</ResponseField>
+
+### Example
+
+```typescript
+import * as Duration from "effect/Duration"
+
+// Create a query atom for fetching user data
+const userAtom = MyApiClient.query("Users", "getUser", {
+  path: { id: "user-123" },
+  timeToLive: Duration.minutes(5),
+  reactivityKeys: ["users", "user-123"]
+})
+
+// Use in a React component
+function UserProfile({ userId }: { userId: string }) {
+  const userAtom = MyApiClient.query("Users", "getUser", {
+    path: { id: userId }
+  })
+  
+  const user = useAtomValue(userAtom)
+  
+  return Result.match(user, {
+    Initial: () => <div>Loading...</div>,
+    Pending: () => <div>Loading...</div>,
+    Success: (data) => <div>Hello {data.name}!</div>,
+    Failure: (error) => <div>Error: {error.message}</div>
+  })
+}
+```
+
+<Note>
+  Query atoms use structural equality for request parameters. Two queries with the same parameters will share the same atom instance and cached data.
+</Note>
+
+## mutation
+
+Creates a mutation function for executing HTTP requests that modify data. Mutations integrate with the reactivity system to automatically invalidate related query caches.
+
+<ParamField path="group" type="GroupName" required>
+  The API group name containing the endpoint.
+</ParamField>
+
+<ParamField path="endpoint" type="Name" required>
+  The endpoint name for the mutation.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for the mutation.
+  
+  <Expandable title="properties">
+    <ParamField path="withResponse" type="boolean">
+      If true, returns both success data and HTTP response as a tuple. Default is `false`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="mutationFn" type="AtomResultFn">
+  A function that accepts request parameters and returns a Result.
+  
+  The request parameter includes:
+  - `path` - Path parameters
+  - `urlParams` - Query parameters
+  - `payload` - Request body
+  - `headers` - HTTP headers
+  - `reactivityKeys` - Keys to invalidate after successful mutation
+</ResponseField>
+
+### Example
+
+```typescript
+// Create a mutation for updating user data
+const updateUser = MyApiClient.mutation("Users", "updateUser")
+
+// Use in a React component
+function UpdateUserForm({ userId }: { userId: string }) {
+  const updateUserMutation = MyApiClient.mutation("Users", "updateUser")
+  const result = useAtomValue(updateUserMutation)
+  
+  const handleSubmit = async (name: string) => {
+    await updateUserMutation({
+      path: { id: userId },
+      payload: { name },
+      // Invalidate user queries after successful update
+      reactivityKeys: ["users", userId]
+    })
+  }
+  
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault()
+      handleSubmit(e.currentTarget.name.value)
+    }}>
+      <input name="name" placeholder="User name" />
+      <button type="submit">
+        {Result.isPending(result) ? "Updating..." : "Update"}
+      </button>
+      {Result.isFailure(result) && (
+        <div>Error: {result.error.message}</div>
+      )}
+    </form>
+  )
+}
+```
+
+<Warning>
+  Mutations automatically invalidate queries with matching reactivity keys. Make sure to use consistent keys across your queries and mutations for proper cache invalidation.
+</Warning>
+
+## Complete integration example
+
+Here's a complete example showing how to set up and use AtomHttpApi in an application:
+
+```typescript
+import * as HttpApi from "@effect/platform/HttpApi"
+import * as HttpApiClient from "@effect/platform/HttpApiClient"
+import * as HttpApiEndpoint from "@effect/platform/HttpApiEndpoint"
+import * as HttpApiGroup from "@effect/platform/HttpApiGroup"
+import * as HttpClient from "@effect/platform/HttpClient"
+import * as AtomHttpApi from "@effect-atom/atom/AtomHttpApi"
+import * as Schema from "effect/Schema"
+import * as Layer from "effect/Layer"
+import * as Duration from "effect/Duration"
+
+// 1. Define your data schemas
+const User = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.String
+})
+
+const CreateUserPayload = Schema.Struct({
+  name: Schema.String,
+  email: Schema.String
+})
+
+// 2. Define your HTTP API
+const UsersApi = HttpApi.make("UsersApi").pipe(
+  HttpApi.addGroup(
+    HttpApiGroup.make("Users").pipe(
+      HttpApiGroup.addEndpoint(
+        HttpApiEndpoint.get("getUser", "/users/:id").pipe(
+          HttpApiEndpoint.setPath(Schema.Struct({ id: Schema.String })),
+          HttpApiEndpoint.setSuccess(User)
+        )
+      ),
+      HttpApiGroup.addEndpoint(
+        HttpApiEndpoint.get("listUsers", "/users").pipe(
+          HttpApiEndpoint.setSuccess(Schema.Array(User))
+        )
+      ),
+      HttpApiGroup.addEndpoint(
+        HttpApiEndpoint.post("createUser", "/users").pipe(
+          HttpApiEndpoint.setPayload(CreateUserPayload),
+          HttpApiEndpoint.setSuccess(User)
+        )
+      )
+    )
+  )
+)
+
+// 3. Create the AtomHttpApi client
+interface UsersApiClient {}
+const UsersApiClient = AtomHttpApi.Tag<UsersApiClient>()("UsersApiClient", {
+  api: UsersApi,
+  httpClient: HttpClient.layer,
+  baseUrl: "https://api.example.com"
+})
+
+// 4. Use in your application
+function UsersList() {
+  const usersAtom = UsersApiClient.query("Users", "listUsers", {
+    timeToLive: Duration.minutes(5),
+    reactivityKeys: ["users"]
+  })
+  
+  const users = useAtomValue(usersAtom)
+  const createUser = UsersApiClient.mutation("Users", "createUser")
+  
+  return Result.match(users, {
+    Initial: () => <div>Loading...</div>,
+    Pending: () => <div>Loading...</div>,
+    Success: (data) => (
+      <div>
+        <h1>Users</h1>
+        <ul>
+          {data.map(user => (
+            <li key={user.id}>{user.name} ({user.email})</li>
+          ))}
+        </ul>
+        <button onClick={async () => {
+          await createUser({
+            payload: { name: "New User", email: "new@example.com" },
+            reactivityKeys: ["users"] // Invalidates the users list
+          })
+        }}>
+          Add User
+        </button>
+      </div>
+    ),
+    Failure: (error) => <div>Error loading users</div>
+  })
+}
+```
+
+## Type safety
+
+AtomHttpApi maintains full type safety from your HTTP API definition:
+
+- **Request parameters** are typed based on endpoint path, query, payload, and header schemas
+- **Success responses** are typed according to the endpoint's success schema
+- **Errors** include the endpoint error type, group errors, HTTP client errors, and parse errors
+- **Auto-completion** works for group names, endpoint names, and all request parameters
+
+<Note>
+  The client uses structural equality for caching, so atoms with identical request parameters will share the same cached instance.
+</Note>

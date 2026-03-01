@@ -1,0 +1,303 @@
+---
+title: Atoms
+description: Learn about Atom fundamentals, creating atoms with Atom.make, keepAlive behavior, and lazy evaluation
+---
+
+## What are atoms?
+
+Atoms are reactive state containers that form the foundation of Effect Atom. An atom represents a piece of state that can be read, updated, and subscribed to. Atoms automatically track dependencies and notify subscribers when their value changes.
+
+The `Atom` interface includes several key properties:
+
+```typescript
+interface Atom<A> {
+  readonly keepAlive: boolean
+  readonly lazy: boolean
+  readonly read: (get: Context) => A
+}
+```
+
+## Creating atoms with Atom.make
+
+The `Atom.make` function is the primary way to create atoms. It accepts various types of values and automatically determines the appropriate atom type.
+
+### Simple value atoms
+
+Create a writable atom with an initial value:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+// Type: Writable<number>
+
+const nameAtom = Atom.make("Alice")
+// Type: Writable<string>
+```
+
+### Computed atoms
+
+Create read-only atoms derived from other atoms:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+
+// Using a function to derive state
+const doubledAtom = Atom.make((get) => get(countAtom) * 2)
+// Type: Atom<number>
+
+// Access multiple atoms
+const nameAtom = Atom.make("Alice")
+const greetingAtom = Atom.make((get) => {
+  const name = get(nameAtom)
+  const count = get(countAtom)
+  return `Hello ${name}, count is ${count}`
+})
+```
+
+### Effect-based atoms
+
+Create atoms that execute effects:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+// Simple effect
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+// Type: Atom<Result.Result<{ id: number; name: string }, never>>
+
+// Effect with initial value
+const dataAtom = Atom.make(
+  Effect.succeed(42).pipe(Effect.delay(1000)),
+  { initialValue: 0 }
+)
+// Type: Atom<Result.Result<number, never>>
+
+// Effect with get context
+const derivedEffectAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    const user = yield* get.result(userAtom)
+    return `User: ${user.name}`
+  })
+)
+```
+
+<Note>
+  When using effects, atoms return a `Result` type that can be in one of three states: `Initial`, `Success`, or `Failure`. See the [Result type](/concepts/result-type) documentation for more details.
+</Note>
+
+## The get function
+
+The `get` function (of type `Atom.Context`) is your primary way to read atom values and interact with other atoms:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const countAtom = Atom.make(0)
+const userAtom = Atom.make(Effect.succeed({ name: "Alice" }))
+
+const messageAtom = Atom.make((get) => {
+  // Read simple values
+  const count = get(countAtom)
+  
+  // Read and subscribe to changes
+  get.subscribe(countAtom, (value) => {
+    console.log("Count changed:", value)
+  })
+  
+  // Mount an atom to keep it alive
+  get.mount(userAtom)
+  
+  // Get current value without subscribing
+  const oneTimeCount = get.once(countAtom)
+  
+  return `Count: ${count}`
+})
+```
+
+### Context methods
+
+The `Context` interface provides many useful methods:
+
+- `get(atom)` - Read an atom's value and subscribe to changes
+- `get.once(atom)` - Read value once without subscribing
+- `get.result(atom)` - Convert Result atom to Effect
+- `get.set(atom, value)` - Update a writable atom
+- `get.subscribe(atom, fn)` - Subscribe to atom changes
+- `get.mount(atom)` - Keep an atom alive
+- `get.refresh(atom)` - Force an atom to re-evaluate
+- `get.addFinalizer(fn)` - Add cleanup function
+
+## Keep alive behavior
+
+By default, atoms are automatically disposed when no components are using them. This is useful for cleaning up resources, but sometimes you want atoms to persist.
+
+### Default behavior (auto-dispose)
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+// When no components use this atom, it resets to initial value
+```
+
+### Using keepAlive
+
+The `keepAlive` combinator prevents automatic disposal:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0).pipe(
+  Atom.keepAlive
+)
+// This atom's value persists even when unused
+```
+
+### Use cases for keepAlive
+
+<Tip>
+  Use `keepAlive` for:
+  - Global application state that should persist
+  - Cached data that's expensive to recompute
+  - Shared state across disconnected components
+  - Configuration values
+</Tip>
+
+<Warning>
+  Don't use `keepAlive` for:
+  - Component-local state that should reset
+  - Temporary UI state
+  - Form state that should clear
+</Warning>
+
+## Lazy evaluation
+
+Atoms are evaluated lazily by default - they don't compute their value until someone reads them.
+
+### Default lazy behavior
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+let evaluationCount = 0
+
+const expensiveAtom = Atom.make(() => {
+  evaluationCount++
+  return "expensive computation"
+})
+
+// evaluationCount is still 0 - not evaluated yet
+
+// Only evaluated when first read
+const value = registry.get(expensiveAtom)
+// Now evaluationCount is 1
+```
+
+### Controlling lazy behavior
+
+You can control lazy evaluation with `setLazy`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+// Force eager evaluation
+const eagerAtom = Atom.make(() => "value").pipe(
+  Atom.setLazy(false)
+)
+
+// Explicitly set lazy
+const lazyAtom = Atom.make(() => "value").pipe(
+  Atom.setLazy(true)
+)
+```
+
+## Writable vs readable atoms
+
+Atoms can be writable or read-only:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+// Writable atom
+const countAtom = Atom.make(0)
+// Type: Writable<number>
+
+// Read-only (computed) atom
+const doubledAtom = Atom.make((get) => get(countAtom) * 2)
+// Type: Atom<number> (not writable)
+
+// Check if writable
+if (Atom.isWritable(countAtom)) {
+  registry.set(countAtom, 5)
+}
+```
+
+## TypeId and type guards
+
+Atoms can be identified using the `isAtom` type guard:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const value = Atom.make(0)
+
+if (Atom.isAtom(value)) {
+  // TypeScript knows value is an Atom
+  console.log(value.keepAlive)
+}
+```
+
+## Advanced: Custom atoms
+
+You can create custom atoms using the `readable` and `writable` constructors:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+// Custom read-only atom
+const customAtom = Atom.readable((get) => {
+  // Custom read logic
+  return "custom value"
+})
+
+// Custom writable atom
+const customWritable = Atom.writable(
+  (get) => {
+    // Read logic
+    return "value"
+  },
+  (ctx, newValue) => {
+    // Write logic
+    console.log("Setting to:", newValue)
+    ctx.setSelf(newValue)
+  }
+)
+```
+
+## Type extraction
+
+Extract types from atoms using type utilities:
+
+```typescript
+import type { Atom } from "@effect-atom/atom"
+import type { Result } from "@effect-atom/atom"
+
+const userAtom = Atom.make(
+  Effect.succeed({ id: 1, name: "Alice" })
+)
+
+// Extract the atom's type
+type UserAtomType = Atom.Type<typeof userAtom>
+// Result.Result<{ id: number; name: string }, never>
+
+// Extract success type from Result atom
+type UserType = Atom.Success<typeof userAtom>
+// { id: number; name: string }
+```

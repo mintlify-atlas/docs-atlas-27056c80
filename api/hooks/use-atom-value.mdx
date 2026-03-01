@@ -1,0 +1,132 @@
+---
+title: useAtomValue
+description: Read atom values in React components with optional transformation
+---
+
+## Overview
+
+The `useAtomValue` hook reads the current value of an atom and subscribes the component to updates. The component will re-render whenever the atom's value changes.
+
+## Signature
+
+```typescript
+export const useAtomValue: {
+  <A>(atom: Atom.Atom<A>): A
+  <A, B>(atom: Atom.Atom<A>, f: (_: A) => B): B
+}
+```
+
+## Parameters
+
+<ParamField path="atom" type="Atom.Atom<A>" required>
+  The atom to read the value from. The component will subscribe to this atom and re-render when its value changes.
+</ParamField>
+
+<ParamField path="f" type="(_: A) => B">
+  Optional transformation function to derive a value from the atom's state. The transformation is memoized and creates a derived atom internally.
+</ParamField>
+
+## Returns
+
+<ResponseField name="value" type="A | B">
+  The current value of the atom, or the transformed value if a transformation function was provided.
+</ResponseField>
+
+## Usage
+
+### Basic usage
+
+Read a simple atom value:
+
+```tsx
+import { useAtomValue } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+
+function Counter() {
+  const count = useAtomValue(countAtom)
+  
+  return <div>Count: {count}</div>
+}
+```
+
+### With transformation
+
+Transform the atom value before using it:
+
+```tsx
+import { useAtomValue } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const userAtom = Atom.make({ firstName: "John", lastName: "Doe" })
+
+function UserGreeting() {
+  const fullName = useAtomValue(
+    userAtom,
+    (user) => `${user.firstName} ${user.lastName}`
+  )
+  
+  return <div>Hello, {fullName}!</div>
+}
+```
+
+### Reading derived state
+
+Derive complex state from an atom:
+
+```tsx
+import { useAtomValue } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const todosAtom = Atom.make([
+  { id: 1, text: "Learn Effect", completed: false },
+  { id: 2, text: "Build app", completed: true }
+])
+
+function TodoStats() {
+  const completedCount = useAtomValue(
+    todosAtom,
+    (todos) => todos.filter(t => t.completed).length
+  )
+  
+  return <div>Completed: {completedCount}</div>
+}
+```
+
+### Read-only components
+
+Create components that only read values without the ability to update:
+
+```tsx
+import { useAtomValue } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const themeAtom = Atom.make({ mode: "light", primary: "#007bff" })
+
+function ThemedButton() {
+  const theme = useAtomValue(themeAtom)
+  
+  return (
+    <button style={{ backgroundColor: theme.primary }}>
+      Click me
+    </button>
+  )
+}
+```
+
+## Best practices
+
+<Note>
+  The transformation function is memoized based on the atom reference and function reference. Use `React.useCallback` to memoize the transformation function if it depends on props or other values.
+</Note>
+
+<Warning>
+  This hook subscribes to the atom and will cause the component to re-render on every atom update. For performance-sensitive cases, use the transformation function to derive only the data you need.
+</Warning>
+
+## Related hooks
+
+- [useAtom](/api/hooks/use-atom) - Read and write atom values
+- [useAtomSet](/api/hooks/use-atom-set) - Write-only access to atoms
+- [useAtomSuspense](/api/hooks/use-atom-suspense) - Read async atoms with Suspense

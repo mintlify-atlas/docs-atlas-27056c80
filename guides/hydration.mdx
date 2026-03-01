@@ -1,0 +1,445 @@
+---
+title: Server-side rendering and hydration
+description: Serialize and hydrate atom state for SSR applications
+---
+
+Effect Atom provides built-in support for server-side rendering (SSR) through dehydration and hydration APIs that allow you to serialize atom state on the server and restore it on the client.
+
+## Overview
+
+The hydration process involves:
+
+1. **Dehydration**: Serialize atom state on the server
+2. **Transfer**: Send the serialized state to the client
+3. **Hydration**: Restore the state in the client-side registry
+
+This ensures your application can render consistently on both server and client without flickering or layout shifts.
+
+## Making atoms serializable
+
+To enable hydration, mark atoms as serializable using `Atom.serializable`:
+
+```ts
+import { Atom } from "@effect-atom/atom"
+import { Schema } from "effect"
+
+const userSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.String
+})
+
+const userAtom = Atom.make(
+  Effect.gen(function* () {
+    return yield* fetchUser()
+  })
+).pipe(
+  Atom.serializable({
+    key: "user:123",
+    schema: userSchema
+  })
+)
+```
+
+The `key` must be unique across your application and stable across renders.
+
+## Dehydrating state on the server
+
+On the server, use `Hydration.dehydrate` to serialize the registry:
+
+```ts
+import { Hydration, Registry } from "@effect-atom/atom"
+
+const registry = Registry.make()
+
+// Mount and populate atoms
+registry.mount(userAtom)
+registry.mount(postsAtom)
+
+// Wait for atoms to load
+await new Promise((resolve) => setTimeout(resolve, 100))
+
+// Serialize the state
+const dehydratedState = Hydration.dehydrate(registry)
+```
+
+### Dehydration options
+
+Control how `Initial` results are encoded:
+
+```ts
+const dehydratedState = Hydration.dehydrate(registry, {
+  encodeInitialAs: "ignore" // default
+})
+```
+
+Available options:
+
+- `"ignore"`: Skip atoms still in Initial state (default)
+- `"value-only"`: Include the Initial state value
+- `"promise"`: Include a promise that resolves when the atom moves out of Initial state
+
+<Info>
+  The `"promise"` mode is useful for streaming SSR where you want to send
+  initial HTML immediately and stream updates as atoms resolve.
+</Info>
+
+## Hydrating state on the client
+
+On the client, use `Hydration.hydrate` to restore the state:
+
+```tsx
+import { Hydration, Registry } from "@effect-atom/atom"
+import { AtomProvider } from "@effect-atom/atom-react"
+
+function App({ dehydratedState }: { dehydratedState: any }) {
+  const registry = Registry.make()
+  
+  // Restore the state
+  Hydration.hydrate(registry, dehydratedState)
+  
+  return (
+    <AtomProvider registry={registry}>
+      <UserProfile />
+      <PostsList />
+    </AtomProvider>
+  )
+}
+```
+
+## Complete SSR example
+
+<Steps>
+  <Step title="Define serializable atoms">
+    Create atoms with unique keys:
+    
+    ```ts
+    import { Atom, Registry } from "@effect-atom/atom"
+    import { Effect, Schema } from "effect"
+    
+    const User = Schema.Struct({
+      id: Schema.String,
+      name: Schema.String
+    })
+    
+    const userAtom = Atom.family((userId: string) =>
+      Atom.make(
+        Effect.gen(function* () {
+          // Simulate API call
+          yield* Effect.sleep(100)
+          return { id: userId, name: "Alice" }
+        })
+      ).pipe(
+        Atom.serializable({
+          key: `user:${userId}`,
+          schema: User
+        })
+      )
+    )
+    ```
+  </Step>
+  
+  <Step title="Server-side rendering">
+    Populate the registry and dehydrate:
+    
+    ```ts
+    // server.ts
+    import { Hydration, Registry } from "@effect-atom/atom"
+    import { renderToString } from "react-dom/server"
+    
+    async function handleRequest(req: Request) {
+      const registry = Registry.make()
+      
+      // Pre-load atoms needed for this page
+      const userId = new URL(req.url).searchParams.get("userId")
+      if (userId) {
+        registry.mount(userAtom(userId))
+      }
+      
+      // Wait for atoms to resolve
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      
+      // Dehydrate the state
+      const dehydratedState = Hydration.dehydrate(registry)
+      
+      // Render the app
+      const html = renderToString(
+        <App registry={registry} />
+      )
+      
+      // Send HTML with embedded state
+      return new Response(
+        `<!DOCTYPE html>
+        <html>
+          <head><title>App</title></head>
+          <body>
+            <div id="root">${html}</div>
+            <script>
+              window.__DEHYDRATED_STATE__ = ${JSON.stringify(dehydratedState)};
+            </script>
+            <script src="/client.js"></script>
+          </body>
+        </html>`,
+        { headers: { "Content-Type": "text/html" } }
+      )
+    }
+    ```
+  </Step>
+  
+  <Step title="Client-side hydration">
+    Hydrate the state before rendering:
+    
+    ```tsx
+    // client.tsx
+    import { Hydration, Registry } from "@effect-atom/atom"
+    import { AtomProvider } from "@effect-atom/atom-react"
+    import { hydrateRoot } from "react-dom/client"
+    
+    const registry = Registry.make()
+    
+    // Hydrate from server state
+    const dehydratedState = (window as any).__DEHYDRATED_STATE__
+    if (dehydratedState) {
+      Hydration.hydrate(registry, dehydratedState)
+    }
+    
+    // Hydrate the React app
+    hydrateRoot(
+      document.getElementById("root")!,
+      <AtomProvider registry={registry}>
+        <App />
+      </AtomProvider>
+    )
+    ```
+  </Step>
+</Steps>
+
+## Dehydrated state structure
+
+From `Hydration.ts:13-26`, the dehydrated format:
+
+```ts
+interface DehydratedAtomValue {
+  readonly "~@effect-atom/atom/DehydratedAtom": true
+  readonly key: string
+  readonly value: unknown
+  readonly dehydratedAt: number
+  readonly resultPromise?: Promise<unknown> | undefined
+}
+```
+
+Each dehydrated atom includes:
+
+- `key`: The unique atom key
+- `value`: The encoded value using the atom's schema
+- `dehydratedAt`: Timestamp when dehydrated
+- `resultPromise`: Optional promise for streaming updates
+
+## Hydration with promises
+
+When using `encodeInitialAs: "promise"`, the client can wait for pending atoms:
+
+```ts
+const dehydratedState = Hydration.dehydrate(registry, {
+  encodeInitialAs: "promise"
+})
+
+// On the client
+Hydration.hydrate(registry, dehydratedState)
+
+// Promises will automatically update the registry when resolved
+for (const atom of Hydration.toValues(dehydratedState)) {
+  if (atom.resultPromise) {
+    atom.resultPromise.then((value) => {
+      console.log("Atom resolved:", value)
+    })
+  }
+}
+```
+
+From `Hydration.ts:86-112`, the hydration logic handles promises:
+
+```ts
+export const hydrate = (
+  registry: Registry.Registry,
+  dehydratedState: Iterable<DehydratedAtom>
+): void => {
+  for (const datom of (dehydratedState as Iterable<DehydratedAtomValue>)) {
+    registry.setSerializable(datom.key, datom.value)
+
+    // If there's a resultPromise, it means this was in Initial state
+    // when dehydrated. Wait for it to resolve, then update the registry
+    if (!datom.resultPromise) continue
+    datom.resultPromise.then((resolvedValue) => {
+      // Update the node with the resolved value
+      const nodes = (registry as any).getNodes()
+      const node = nodes.get(datom.key)
+      if (node) {
+        const atom = node.atom as any
+        if (atom[Atom.SerializableTypeId]) {
+          const decoded = atom[Atom.SerializableTypeId].decode(resolvedValue)
+          node.setValue(decoded)
+        }
+      }
+    })
+  }
+}
+```
+
+## Best practices
+
+<Steps>
+  <Step title="Use stable keys">
+    Ensure atom keys are deterministic and stable:
+    
+    ```ts
+    // Good: Stable key based on ID
+    Atom.serializable({
+      key: `user:${userId}`,
+      schema: userSchema
+    })
+    
+    // Bad: Random or timestamp-based keys
+    Atom.serializable({
+      key: `user:${Math.random()}`,
+      schema: userSchema
+    })
+    ```
+  </Step>
+  
+  <Step title="Only serialize necessary atoms">
+    Mark only atoms needed for initial render as serializable:
+    
+    ```ts
+    // Serialize: Above-the-fold content
+    const heroAtom = Atom.make(fetchHero()).pipe(
+      Atom.serializable({ key: "hero", schema: HeroSchema })
+    )
+    
+    // Don't serialize: Below-the-fold, client-only state
+    const analyticsAtom = Atom.make(trackAnalytics())
+    ```
+  </Step>
+  
+  <Step title="Handle missing hydration data">
+    Components should handle cases where hydration data is missing:
+    
+    ```tsx
+    function UserProfile() {
+      const result = useAtomValue(userAtom)
+      
+      // Handle Initial state (not hydrated or loading)
+      return Result.match(result, {
+        onInitial: () => <Skeleton />,
+        onSuccess: (user) => <div>{user.name}</div>,
+        onFailure: (error) => <Error error={error} />
+      })
+    }
+    ```
+  </Step>
+  
+  <Step title="Consider payload size">
+    Large dehydrated states increase HTML size:
+    
+    ```ts
+    // Measure dehydrated size
+    const state = Hydration.dehydrate(registry)
+    const sizeKB = JSON.stringify(state).length / 1024
+    console.log(`Dehydrated state: ${sizeKB.toFixed(2)}KB`)
+    ```
+    
+    If too large, consider:
+    - Serializing fewer atoms
+    - Using `encodeInitialAs: "ignore"`
+    - Splitting hydration across routes
+  </Step>
+</Steps>
+
+## Framework integration
+
+### Next.js App Router
+
+```tsx
+// app/page.tsx
+import { Hydration, Registry } from "@effect-atom/atom"
+import { AtomProvider } from "@effect-atom/atom-react"
+
+export default async function Page() {
+  const registry = Registry.make()
+  
+  // Pre-load server-side
+  registry.mount(dataAtom)
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  
+  const dehydratedState = Hydration.dehydrate(registry)
+  
+  return (
+    <AtomProvider 
+      registry={registry}
+      dehydratedState={dehydratedState}
+    >
+      <Content />
+    </AtomProvider>
+  )
+}
+```
+
+### Remix
+
+```tsx
+// routes/index.tsx
+import { json, LoaderFunctionArgs } from "@remix-run/node"
+import { useLoaderData } from "@remix-run/react"
+import { Hydration, Registry } from "@effect-atom/atom"
+
+export async function loader({ request }: LoaderFunctionArgs) {
+  const registry = Registry.make()
+  registry.mount(dataAtom)
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  
+  return json({
+    dehydratedState: Hydration.dehydrate(registry)
+  })
+}
+
+export default function Index() {
+  const { dehydratedState } = useLoaderData<typeof loader>()
+  
+  return (
+    <AtomProvider dehydratedState={dehydratedState}>
+      <Content />
+    </AtomProvider>
+  )
+}
+```
+
+<Note>
+  The hydration APIs work with any SSR framework. The key is to dehydrate on
+  the server, transfer the state to the client, and hydrate before rendering.
+</Note>
+
+## Troubleshooting
+
+### Hydration mismatches
+
+If you see hydration errors:
+
+1. Ensure keys are stable and deterministic
+2. Verify schemas match on server and client
+3. Check that all serializable atoms are mounted on the server
+
+### Missing state on client
+
+If atoms show Initial state after hydration:
+
+1. Verify the atom is marked with `Atom.serializable`
+2. Check the atom was mounted and loaded on the server
+3. Ensure `Hydration.hydrate` is called before rendering
+
+### Large payload sizes
+
+If dehydrated state is too large:
+
+1. Use `encodeInitialAs: "ignore"` to skip pending atoms
+2. Only mark critical atoms as serializable
+3. Consider code-splitting and route-based hydration

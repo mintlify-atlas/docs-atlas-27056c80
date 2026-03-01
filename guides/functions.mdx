@@ -1,0 +1,452 @@
+---
+title: Functions
+description: Learn how to use Atom.fn to create effectful function atoms that execute operations reactively.
+---
+
+Function atoms let you create reactive functions that execute Effect computations. Unlike regular atoms that represent state, function atoms represent operations that can be triggered on demand.
+
+## Basic function atoms
+
+Create a function atom using `Atom.fn`:
+
+```ts
+import { Atom, useAtomSet } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+// Create a simple `Atom.fn` that logs a number
+const logAtom = Atom.fn(
+  Effect.fnUntraced(function* (arg: number) {
+    yield* Effect.log("got arg", arg)
+  }),
+)
+
+function LogComponent() {
+  // To call the `Atom.fn`, we need to use the `useAtomSet` hook
+  const logNumber = useAtomSet(logAtom)
+  return <button onClick={() => logNumber(42)}>Log 42</button>
+}
+```
+
+## Function signatures
+
+The `Atom.fn` function has several overloads for different use cases:
+
+```ts
+// Type-first style (specify argument type upfront)
+const fn1 = Atom.fn<string>()(Effect.fnUntraced(function* (arg) {
+  // arg is inferred as string
+  yield* Effect.log(arg)
+}))
+
+// Direct style (argument type inferred)
+const fn2 = Atom.fn(
+  Effect.fnUntraced(function* (arg: number) {
+    yield* Effect.log(arg)
+  })
+)
+
+// With void argument
+const fn3 = Atom.fn(
+  Effect.fnUntraced(function* () {
+    yield* Effect.log("no args")
+  })
+)
+```
+
+## Using with services
+
+Function atoms can access Effect services when created from an `AtomRuntime`:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+class Users extends Effect.Service<Users>()("app/Users", {
+  effect: Effect.gen(function* () {
+    const create = (name: string) => Effect.succeed({ id: 1, name })
+    return { create } as const
+  }),
+}) {}
+
+const runtimeAtom = Atom.runtime(Users.Default)
+
+// Here we are using `runtimeAtom.fn` to create a function from the `Users.create`
+// method.
+const createUserAtom = runtimeAtom.fn(
+  Effect.fnUntraced(function* (name: string) {
+    const users = yield* Users
+    return yield* users.create(name)
+  }),
+)
+
+function CreateUserComponent() {
+  // If your function returns a `Result`, you can use the useAtomSet hook with `mode: "promiseExit"`
+  const createUser = useAtomSet(createUserAtom, { mode: "promiseExit" })
+  return (
+    <button
+      onClick={async () => {
+        const exit = await createUser("John")
+        if (Exit.isSuccess(exit)) {
+          console.log(exit.value)
+        }
+      }}
+    >
+      Create user
+    </button>
+  )
+}
+```
+
+## Function atom interface
+
+Function atoms implement the `AtomResultFn` interface:
+
+```ts
+interface AtomResultFn<Arg, A, E = never> extends Writable<Result.Result<A, E>, Arg | Reset | Interrupt> {}
+```
+
+This means a function atom is actually a writable atom that:
+- Reads as a `Result` of the last execution
+- Writes by accepting an argument to trigger a new execution
+
+## Reading function atom state
+
+You can read the state of a function atom to see the result of the last execution:
+
+```tsx
+import { Atom, Result, useAtom, useAtomValue } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const multiplyAtom = Atom.fn(
+  Effect.fnUntraced(function* (n: number) {
+    yield* Effect.sleep("1 second")
+    return n * 2
+  }),
+)
+
+function MultiplyComponent() {
+  const [result, multiply] = useAtom(multiplyAtom)
+  
+  return (
+    <div>
+      <button onClick={() => multiply(5)}>Multiply 5</button>
+      <button onClick={() => multiply(10)}>Multiply 10</button>
+      
+      {Result.builder(result)
+        .onInitial(() => <p>Click a button to start</p>)
+        .onSuccess((value, { waiting }) => (
+          <p>
+            Result: {value}
+            {waiting && " (calculating...)"}
+          </p>
+        ))
+        .onFailure((cause) => <p>Error: {Cause.pretty(cause)}</p>)
+        .render()
+      }
+    </div>
+  )
+}
+```
+
+## Initial values
+
+Provide an initial value to display before the first execution:
+
+```ts
+const multiplyAtom = Atom.fn(
+  Effect.fnUntraced(function* (n: number) {
+    return n * 2
+  }),
+  { initialValue: 0 }
+)
+
+// The Result will be Success(0) before any execution
+```
+
+## Concurrent execution
+
+By default, a new execution cancels the previous one. Enable concurrent execution to allow multiple executions to run in parallel:
+
+```ts
+const fetchAtom = Atom.fn(
+  Effect.fnUntraced(function* (id: string) {
+    yield* Effect.sleep("2 seconds")
+    return yield* fetchData(id)
+  }),
+  { concurrent: true }
+)
+
+// Multiple calls can now run simultaneously
+fetchAtom.write(ctx, "id1") // Starts execution 1
+fetchAtom.write(ctx, "id2") // Starts execution 2 (doesn't cancel execution 1)
+```
+
+<Warning>
+When using concurrent mode, the Result will reflect the state of all running executions. The atom will show `waiting: true` until all executions complete.
+</Warning>
+
+## Resetting function atoms
+
+Use the `Reset` symbol to clear the function atom state back to initial:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const myFn = Atom.fn(Effect.fnUntraced(function* (n: number) {
+  return n * 2
+}))
+
+function Component() {
+  const setFn = useAtomSet(myFn)
+  
+  return (
+    <div>
+      <button onClick={() => setFn(10)}>Execute</button>
+      <button onClick={() => setFn(Atom.Reset)}>Reset</button>
+    </div>
+  )
+}
+```
+
+## Interrupting execution
+
+Use the `Interrupt` symbol to cancel the current execution:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const longRunningFn = Atom.fn(
+  Effect.fnUntraced(function* () {
+    yield* Effect.sleep("10 seconds")
+    return "done"
+  })
+)
+
+function Component() {
+  const setFn = useAtomSet(longRunningFn)
+  
+  return (
+    <div>
+      <button onClick={() => setFn()}>Start</button>
+      <button onClick={() => setFn(Atom.Interrupt)}>Cancel</button>
+    </div>
+  )
+}
+```
+
+## Function context
+
+Function atoms receive a `FnContext` which provides access to other atoms:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const multiplierAtom = Atom.make(2)
+
+const multiplyAtom = Atom.fn(
+  Effect.fnUntraced(function* (n: number, get: Atom.FnContext) {
+    const multiplier = get(multiplierAtom)
+    return n * multiplier
+  })
+)
+```
+
+The `FnContext` interface provides:
+
+```ts
+interface FnContext {
+  // Read an atom
+  <A>(atom: Atom<A>): A
+  
+  // Read a Result atom as Effect
+  result<A, E>(atom: Atom<Result.Result<A, E>>): Effect.Effect<A, E>
+  
+  // Add cleanup function
+  addFinalizer(f: () => void): void
+  
+  // Mount an atom (keep it alive)
+  mount<A>(atom: Atom<A>): void
+  
+  // Refresh an atom
+  refresh<A>(atom: Atom<A>): void
+  
+  // Access/set own state
+  self<A>(): Option.Option<A>
+  setSelf<A>(a: A): void
+  
+  // Set other atoms
+  set<R, W>(atom: Writable<R, W>, value: W): void
+  setResult<A, E, W>(atom: Writable<Result.Result<A, E>, W>, value: W): Effect.Effect<A, E>
+  
+  // Convert atom to stream
+  stream<A>(atom: Atom<A>, options?: { ... }): Stream.Stream<A>
+  streamResult<A, E>(atom: Atom<Result.Result<A, E>>, options?: { ... }): Stream.Stream<A, E>
+  
+  // Subscribe to changes
+  subscribe<A>(atom: Atom<A>, f: (a: A) => void, options?: { ... }): void
+  
+  // Access registry
+  readonly registry: Registry.Registry
+}
+```
+
+## Reactivity keys
+
+Integrate with `@effect/experimental`'s Reactivity service to automatically invalidate queries when mutations occur:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+import { Reactivity } from "@effect/experimental"
+
+const runtimeAtom = Atom.runtime(Layer.empty)
+
+const updateUserAtom = runtimeAtom.fn(
+  Effect.fnUntraced(function* (userId: string, name: string) {
+    // Perform mutation
+    yield* Effect.log("Updating user", userId, name)
+  }),
+  // Automatically invalidate these keys when the mutation completes
+  { reactivityKeys: ["users", `user:${userId}`] }
+)
+
+const userQueryAtom = Atom.make(() => fetchUser(userId)).pipe(
+  // Refresh when these keys are invalidated
+  Atom.withReactivity(["users", `user:${userId}`])
+)
+```
+
+## Stream functions
+
+Function atoms can also return streams:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect, Stream } from "effect"
+
+const streamFn = Atom.fn(
+  Effect.fnUntraced(function* (count: number) {
+    return Stream.range(0, count).pipe(
+      Stream.tap((n) => Effect.log(`Emitting ${n}`))
+    )
+  })
+)
+
+// The Result will contain the last emitted value from the stream
+```
+
+<Note>
+When a function atom returns a stream, the atom's value is updated with the last emitted value from each chunk, similar to how `Atom.make` handles streams.
+</Note>
+
+## Synchronous functions
+
+For synchronous operations that don't need Effect, use `Atom.fnSync`:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+
+const addAtom = Atom.fnSync((n: number, get: Atom.FnContext) => {
+  const multiplier = get(multiplierAtom)
+  return n + multiplier
+})
+
+function Component() {
+  const result = useAtomValue(addAtom) // Option.Option<number>
+  const add = useAtomSet(addAtom)
+  
+  return (
+    <button onClick={() => add(5)}>
+      Add 5
+    </button>
+  )
+}
+```
+
+With initial value:
+
+```ts
+const addAtom = Atom.fnSync(
+  (n: number) => n + 1,
+  { initialValue: 0 }
+)
+
+// Result is number (not Option<number>)
+```
+
+## Best practices
+
+<Tip>
+Use function atoms for operations rather than state. If you're storing data that changes over time, use a regular atom. Use function atoms for actions like API calls, mutations, or side effects.
+</Tip>
+
+### Naming conventions
+
+```ts
+// ✅ Good: Action-oriented names
+const createUserAtom = Atom.fn(...)
+const deletePostAtom = Atom.fn(...)
+const sendMessageAtom = Atom.fn(...)
+
+// ❌ Bad: State-oriented names
+const userAtom = Atom.fn(...)
+const postAtom = Atom.fn(...)
+```
+
+### Error handling
+
+Function atoms automatically capture errors in the Result:
+
+```tsx
+const riskyOperation = Atom.fn(
+  Effect.fnUntraced(function* (input: string) {
+    if (!input) {
+      yield* Effect.fail(new Error("Input required"))
+    }
+    return input.toUpperCase()
+  })
+)
+
+function Component() {
+  const [result, execute] = useAtom(riskyOperation)
+  
+  return Result.builder(result)
+    .onInitial(() => <button onClick={() => execute("hello")}>Execute</button>)
+    .onSuccess((value) => <p>Result: {value}</p>)
+    .onFailure((cause) => (
+      <div>
+        <p>Error: {Cause.pretty(cause)}</p>
+        <button onClick={() => execute("hello")}>Retry</button>
+      </div>
+    ))
+    .render()
+}
+```
+
+### Combining with atom families
+
+Create parameterized function atoms using families:
+
+```ts
+const deletePostFamily = Atom.family((userId: string) =>
+  runtimeAtom.fn(
+    Effect.fnUntraced(function* (postId: string) {
+      const posts = yield* PostsService
+      return yield* posts.delete(userId, postId)
+    })
+  )
+)
+
+function DeleteButton({ userId, postId }: Props) {
+  const deletePost = useAtomSet(deletePostFamily(userId), {
+    mode: "promiseExit"
+  })
+  
+  return (
+    <button onClick={() => deletePost(postId)}>
+      Delete
+    </button>
+  )
+}
+```

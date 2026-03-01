@@ -1,0 +1,522 @@
+---
+title: Scoped effects
+description: Understanding scoped effects in atoms, using finalizers for cleanup, and managing resources with Effect's Scope
+---
+
+## What are scoped effects?
+
+Scoped effects in Effect Atom automatically manage resources and cleanup. When you create an atom with an Effect, it receives a `Scope` that you can use to:
+
+- Add finalizers that run when the atom is rebuilt or disposed
+- Acquire resources that are automatically released
+- Compose scoped effects from the Effect ecosystem
+
+This ensures resources are properly cleaned up and prevents memory leaks.
+
+## Automatic scope provision
+
+Every effect-based atom automatically gets a `Scope`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Scope } from "effect"
+
+const resourceAtom = Atom.make(
+  Effect.gen(function* () {
+    // Scope is automatically provided
+    const scope = yield* Scope.Scope
+    
+    // Or use scoped operations directly
+    const resource = yield* acquireResource()
+    
+    return resource.data
+  })
+)
+```
+
+## Using finalizers
+
+Finalizers are cleanup functions that run when an atom is rebuilt or disposed.
+
+### Basic finalizers
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const timerAtom = Atom.make(
+  Effect.gen(function* () {
+    const intervalId = setInterval(() => {
+      console.log("tick")
+    }, 1000)
+    
+    // Cleanup when atom rebuilds or disposes
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        clearInterval(intervalId)
+        console.log("Timer cleaned up")
+      })
+    )
+    
+    return "timer running"
+  })
+)
+```
+
+### Multiple finalizers
+
+You can add multiple finalizers - they run in reverse order:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const resourceAtom = Atom.make(
+  Effect.gen(function* () {
+    yield* Effect.addFinalizer(() =>
+      Effect.log("First finalizer")
+    )
+    
+    const resource = yield* openResource()
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => resource.close()).pipe(
+        Effect.tap(() => Effect.log("Second finalizer"))
+      )
+    )
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.log("Third finalizer")
+    )
+    
+    return resource.data
+  })
+)
+
+// When cleaned up, logs:
+// Third finalizer
+// Second finalizer  
+// First finalizer
+```
+
+### Context-based finalizers
+
+Use `get.addFinalizer` for non-effect cleanup:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+const eventAtom = Atom.make((get) => {
+  const handler = () => console.log("Event fired")
+  
+  window.addEventListener("resize", handler)
+  
+  // Cleanup using get.addFinalizer
+  get.addFinalizer(() => {
+    window.removeEventListener("resize", handler)
+  })
+  
+  return "listening"
+})
+```
+
+## When finalizers run
+
+Finalizers execute in these situations:
+
+### 1. Atom rebuild
+
+When dependencies change and the atom re-evaluates:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const userIdAtom = Atom.make(1)
+
+const userAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    const userId = get(userIdAtom)
+    
+    const subscription = yield* subscribeToUser(userId)
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        subscription.unsubscribe()
+        console.log(`Unsubscribed from user ${userId}`)
+      })
+    )
+    
+    return subscription.data
+  })
+)
+
+// When userIdAtom changes:
+// 1. Finalizer runs (unsubscribes from old user)
+// 2. Effect re-runs (subscribes to new user)
+```
+
+### 2. Atom disposal
+
+When the atom is no longer used and not marked with `keepAlive`:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const tempResourceAtom = Atom.make(
+  Effect.gen(function* () {
+    const resource = yield* acquireResource()
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        resource.release()
+        console.log("Resource released")
+      })
+    )
+    
+    return resource
+  })
+)
+// Finalizer runs when no components use this atom
+
+const persistentAtom = tempResourceAtom.pipe(
+  Atom.keepAlive
+)
+// Finalizer only runs when explicitly disposed
+```
+
+### 3. Manual interruption
+
+When an effect is interrupted:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const longRunningAtom = Atom.fn((id: number) =>
+  Effect.gen(function* () {
+    yield* Effect.addFinalizer(() =>
+      Effect.log("Interrupted!")
+    )
+    
+    yield* Effect.sleep(10000)
+    return `Completed ${id}`
+  })
+)
+
+// Start operation
+registry.set(longRunningAtom, 1)
+
+// Interrupt it
+registry.set(longRunningAtom, Atom.Interrupt)
+// Logs: "Interrupted!"
+```
+
+## Resource management patterns
+
+### WebSocket connection
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Queue, Stream } from "effect"
+
+const websocketAtom = Atom.make(
+  Effect.gen(function* () {
+    const queue = yield* Queue.unbounded<string>()
+    const ws = new WebSocket("wss://example.com")
+    
+    ws.onmessage = (event) => {
+      Effect.runSync(Queue.offer(queue, event.data))
+    }
+    
+    // Cleanup connection
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        ws.close()
+        console.log("WebSocket closed")
+      })
+    )
+    
+    // Return stream of messages
+    return Stream.fromQueue(queue)
+  })
+)
+```
+
+### File handle
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+import * as fs from "fs/promises"
+
+const fileAtom = Atom.make(
+  Effect.gen(function* () {
+    const handle = yield* Effect.tryPromise(() =>
+      fs.open("/path/to/file", "r")
+    )
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.tryPromise(() => handle.close()).pipe(
+        Effect.tap(() => Effect.log("File closed"))
+      )
+    )
+    
+    const content = yield* Effect.tryPromise(() =>
+      handle.readFile({ encoding: "utf-8" })
+    )
+    
+    return content
+  })
+)
+```
+
+### Database connection
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Context, Layer } from "effect"
+
+class Database extends Context.Tag("Database")<
+  Database,
+  { readonly query: (sql: string) => Effect.Effect<any> }
+>() {}
+
+const DatabaseLive = Layer.scoped(
+  Database,
+  Effect.gen(function* () {
+    const connection = yield* connectToDatabase()
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        connection.close()
+        console.log("Database connection closed")
+      })
+    )
+    
+    return {
+      query: (sql: string) =>
+        Effect.tryPromise(() => connection.query(sql))
+    }
+  })
+)
+
+const dbRuntime = Atom.runtime(DatabaseLive)
+```
+
+## Scoped services
+
+Use Effect's scoped services in atoms:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Context, Layer } from "effect"
+
+class Cache extends Context.Tag("Cache")<
+  Cache,
+  { readonly get: (key: string) => Effect.Effect<string | null> }
+>() {}
+
+const CacheLive = Layer.scoped(
+  Cache,
+  Effect.gen(function* () {
+    const cache = new Map<string, string>()
+    
+    // Cleanup on scope close
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        cache.clear()
+        console.log("Cache cleared")
+      })
+    )
+    
+    return {
+      get: (key: string) => Effect.sync(() => cache.get(key) ?? null)
+    }
+  })
+)
+
+const runtime = Atom.runtime(CacheLive)
+
+const dataAtom = runtime.atom(
+  Effect.gen(function* () {
+    const cache = yield* Cache
+    return yield* cache.get("key")
+  })
+)
+```
+
+## Nested scopes
+
+Scopes can be nested for fine-grained control:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect, Scope } from "effect"
+
+const nestedAtom = Atom.make(
+  Effect.gen(function* () {
+    // Outer scope (atom lifetime)
+    yield* Effect.addFinalizer(() =>
+      Effect.log("Outer cleanup")
+    )
+    
+    // Create inner scope
+    const innerScope = yield* Scope.make()
+    
+    yield* Scope.extend(
+      Effect.gen(function* () {
+        // Inner scope
+        yield* Effect.addFinalizer(() =>
+          Effect.log("Inner cleanup")
+        )
+        
+        return "inner resource"
+      }),
+      innerScope
+    )
+    
+    // Close inner scope early
+    yield* Scope.close(innerScope, Exit.void)
+    // Logs: "Inner cleanup"
+    
+    return "outer resource"
+  })
+)
+// When atom disposes:
+// Logs: "Outer cleanup"
+```
+
+## Effect.acquireRelease
+
+Use Effect's built-in resource management:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const resourceAtom = Atom.make(
+  Effect.acquireRelease(
+    // Acquire
+    Effect.sync(() => {
+      console.log("Acquiring resource")
+      return { data: "resource" }
+    }),
+    // Release
+    (resource) => Effect.sync(() => {
+      console.log("Releasing resource")
+      resource.data = ""
+    })
+  ).pipe(
+    Effect.map((resource) => resource.data)
+  )
+)
+```
+
+## Combining with get.addFinalizer
+
+Combine Effect finalizers with context finalizers:
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const combinedAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    // Effect finalizer
+    yield* Effect.addFinalizer(() =>
+      Effect.log("Effect cleanup")
+    )
+    
+    // Context finalizer (non-effectful)
+    get.addFinalizer(() => {
+      console.log("Context cleanup")
+    })
+    
+    return "data"
+  })
+)
+```
+
+<Warning>
+  Context finalizers run **before** Effect finalizers during cleanup.
+</Warning>
+
+## Common patterns
+
+### Subscription management
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const topicAtom = Atom.make("news")
+
+const subscriptionAtom = Atom.make((get) =>
+  Effect.gen(function* () {
+    const topic = get(topicAtom)
+    const sub = yield* subscribeTo(topic)
+    
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => sub.unsubscribe())
+    )
+    
+    return sub.messages
+  })
+)
+// Automatically unsubscribes and resubscribes when topic changes
+```
+
+### Interval cleanup
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const pollingAtom = Atom.make((get) => {
+  const intervalId = setInterval(() => {
+    get.refreshSelf()
+  }, 5000)
+  
+  get.addFinalizer(() => {
+    clearInterval(intervalId)
+  })
+  
+  return Effect.succeed(Date.now())
+})
+```
+
+### Observer pattern
+
+```typescript
+import { Atom } from "@effect-atom/atom"
+
+class EventEmitter {
+  private listeners = new Set<(data: any) => void>()
+  
+  on(fn: (data: any) => void) {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+  
+  emit(data: any) {
+    this.listeners.forEach(fn => fn(data))
+  }
+}
+
+const emitter = new EventEmitter()
+
+const eventAtom = Atom.make((get) => {
+  let latest = "no events"
+  
+  const unsubscribe = emitter.on((data) => {
+    latest = data
+    get.setSelf(latest)
+  })
+  
+  get.addFinalizer(unsubscribe)
+  
+  return latest
+})
+```

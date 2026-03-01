@@ -1,0 +1,715 @@
+---
+title: Result
+description: Complete API reference for the Result module - represent asynchronous state with loading, success, and error states
+---
+
+The `Result` module provides a data type for representing the state of asynchronous operations. It has three states: `Initial` (not yet started or no value), `Success` (completed successfully), and `Failure` (completed with an error).
+
+Each state can also have a `waiting` flag to indicate when a refresh or update is in progress.
+
+## Type definitions
+
+### Result
+
+```typescript
+type Result<A, E = never> = Initial<A, E> | Success<A, E> | Failure<A, E>
+```
+
+A result can be in one of three states:
+- `Initial` - No value yet, or reset to initial state
+- `Success` - Contains a successful value
+- `Failure` - Contains an error cause
+
+### Initial
+
+```typescript
+interface Initial<A, E = never> extends Result.Proto<A, E> {
+  readonly _tag: "Initial"
+}
+```
+
+Represents the initial state before a value is available.
+
+### Success
+
+```typescript
+interface Success<A, E = never> extends Result.Proto<A, E> {
+  readonly _tag: "Success"
+  readonly value: A
+  readonly timestamp: number
+}
+```
+
+Represents a successful result with a value and timestamp.
+
+### Failure
+
+```typescript
+interface Failure<A, E = never> extends Result.Proto<A, E> {
+  readonly _tag: "Failure"
+  readonly cause: Cause.Cause<E>
+  readonly previousSuccess: Option.Option<Success<A, E>>
+}
+```
+
+Represents a failed result with a cause and optionally the last successful value.
+
+## Constructors
+
+### initial
+
+Create an Initial result.
+
+```typescript
+const initial: <A = never, E = never>(waiting?: boolean) => Initial<A, E>
+```
+
+<ParamField path="waiting" type="boolean" default="false">
+  Whether the result is in a waiting/loading state
+</ParamField>
+
+**Example**
+
+```typescript
+import { Result } from "@effect-rx/rx"
+
+const result = Result.initial()
+// { _tag: "Initial", waiting: false }
+
+const loading = Result.initial(true)
+// { _tag: "Initial", waiting: true }
+```
+
+### success
+
+Create a Success result.
+
+```typescript
+const success: <A, E = never>(value: A, options?: {
+  readonly waiting?: boolean | undefined
+  readonly timestamp?: number | undefined
+}) => Success<A, E>
+```
+
+<ParamField path="value" type="A">
+  The successful value
+</ParamField>
+
+<ParamField path="options.waiting" type="boolean" default="false">
+  Whether a refresh is in progress
+</ParamField>
+
+<ParamField path="options.timestamp" type="number" default="Date.now()">
+  When the value was created
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.success(42)
+// { _tag: "Success", value: 42, waiting: false, timestamp: ... }
+
+const refreshing = Result.success(42, { waiting: true })
+// Shows value while refreshing
+```
+
+### fail
+
+Create a Failure result from an error.
+
+```typescript
+const fail: <E, A = never>(error: E, options?: {
+  readonly previousSuccess?: Option.Option<Success<A, E>> | undefined
+  readonly waiting?: boolean | undefined
+}) => Failure<A, E>
+```
+
+<ParamField path="error" type="E">
+  The error value
+</ParamField>
+
+<ParamField path="options.previousSuccess" type="Option<Success<A, E>>">
+  The last successful value, if any
+</ParamField>
+
+<ParamField path="options.waiting" type="boolean">
+  Whether a retry is in progress
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.fail("Network error")
+// { _tag: "Failure", cause: Cause.fail("Network error"), ... }
+```
+
+### failure
+
+Create a Failure result from a Cause.
+
+```typescript
+const failure: <A, E = never>(
+  cause: Cause.Cause<E>,
+  options?: {
+    readonly previousSuccess?: Option.Option<Success<A, E>> | undefined
+    readonly waiting?: boolean | undefined
+  }
+) => Failure<A, E>
+```
+
+<ParamField path="cause" type="Cause.Cause<E>">
+  The error cause
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.failure(
+  Cause.fail("Error 1").pipe(
+    Cause.parallel(Cause.fail("Error 2"))
+  )
+)
+```
+
+### fromExit
+
+Create a Result from an Effect Exit.
+
+```typescript
+const fromExit: <A, E>(exit: Exit.Exit<A, E>) => Success<A, E> | Failure<A, E>
+```
+
+**Example**
+
+```typescript
+const exit = Exit.succeed(42)
+const result = Result.fromExit(exit)
+// { _tag: "Success", value: 42 }
+```
+
+### waiting
+
+Mark a result as waiting (refreshing).
+
+```typescript
+const waiting: <R extends Result<any, any>>(
+  self: R,
+  options?: { readonly touch?: boolean | undefined }
+) => R
+```
+
+<ParamField path="self" type="Result<A, E>">
+  The result to mark as waiting
+</ParamField>
+
+<ParamField path="options.touch" type="boolean">
+  If true, updates the timestamp for Success results
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.success(42)
+const refreshing = Result.waiting(result)
+// { _tag: "Success", value: 42, waiting: true }
+```
+
+## Accessors
+
+### value
+
+Extract the value from a Result if available.
+
+```typescript
+const value: <A, E>(self: Result<A, E>) => Option.Option<A>
+```
+
+Returns `Some(value)` for Success results or if a Failure has a previousSuccess. Returns `None` for Initial results or Failures without a previous value.
+
+**Example**
+
+```typescript
+const success = Result.success(42)
+Result.value(success) // Option.some(42)
+
+const initial = Result.initial()
+Result.value(initial) // Option.none()
+```
+
+### getOrElse
+
+Get the value or a default.
+
+```typescript
+const getOrElse: {
+  <B>(orElse: LazyArg<B>): <A, E>(self: Result<A, E>) => A | B
+  <A, E, B>(self: Result<A, E>, orElse: LazyArg<B>): A | B
+}
+```
+
+<ParamField path="orElse" type="() => B">
+  Default value provider
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.initial<number>()
+const value = Result.getOrElse(result, () => 0)
+// 0
+```
+
+### getOrThrow
+
+Get the value or throw an exception.
+
+```typescript
+const getOrThrow: <A, E>(self: Result<A, E>) => A
+```
+
+<Note>
+  Throws `NoSuchElementException` if the result has no value.
+</Note>
+
+**Example**
+
+```typescript
+const result = Result.success(42)
+const value = Result.getOrThrow(result)
+// 42
+```
+
+### error
+
+Extract the error from a Failure.
+
+```typescript
+const error: <A, E>(self: Result<A, E>) => Option.Option<E>
+```
+
+**Example**
+
+```typescript
+const result = Result.fail("Error")
+Result.error(result) // Option.some("Error")
+```
+
+### cause
+
+Extract the Cause from a Failure.
+
+```typescript
+const cause: <A, E>(self: Result<A, E>) => Option.Option<Cause.Cause<E>>
+```
+
+## Refinements
+
+### isResult
+
+Check if a value is a Result.
+
+```typescript
+const isResult: (u: unknown) => u is Result<unknown, unknown>
+```
+
+### isInitial
+
+Check if a result is Initial.
+
+```typescript
+const isInitial: <A, E>(result: Result<A, E>) => result is Initial<A, E>
+```
+
+### isSuccess
+
+Check if a result is Success.
+
+```typescript
+const isSuccess: <A, E>(result: Result<A, E>) => result is Success<A, E>
+```
+
+### isFailure
+
+Check if a result is Failure.
+
+```typescript
+const isFailure: <A, E>(result: Result<A, E>) => result is Failure<A, E>
+```
+
+### isWaiting
+
+Check if a result is in waiting state.
+
+```typescript
+const isWaiting: <A, E>(result: Result<A, E>) => boolean
+```
+
+**Example**
+
+```typescript
+const result = Result.success(42, { waiting: true })
+Result.isWaiting(result) // true
+```
+
+### isNotInitial
+
+Check if a result is not Initial.
+
+```typescript
+const isNotInitial: <A, E>(result: Result<A, E>) => result is Success<A, E> | Failure<A, E>
+```
+
+## Transformations
+
+### map
+
+Transform the success value.
+
+```typescript
+const map: {
+  <A, B>(f: (a: A) => B): <E>(self: Result<A, E>) => Result<B, E>
+  <E, A, B>(self: Result<A, E>, f: (a: A) => B): Result<B, E>
+}
+```
+
+<ParamField path="f" type="(a: A) => B">
+  Transform function applied to success values
+</ParamField>
+
+**Example**
+
+```typescript
+const result = Result.success(5)
+const doubled = Result.map(result, (n) => n * 2)
+// { _tag: "Success", value: 10 }
+
+// Also maps previousSuccess in Failure
+const failure = Result.fail("error", {
+  previousSuccess: Option.some(Result.success(5))
+})
+const mapped = Result.map(failure, (n) => n * 2)
+// previousSuccess.value is now 10
+```
+
+### flatMap
+
+Chain Result operations.
+
+```typescript
+const flatMap: {
+  <A, E, B, E2>(
+    f: (a: A, prev: Success<A, E>) => Result<B, E2>
+  ): (self: Result<A, E>) => Result<B, E | E2>
+}
+```
+
+**Example**
+
+```typescript
+const result = Result.success(5)
+const chained = Result.flatMap(result, (n) =>
+  n > 0 ? Result.success(n * 2) : Result.fail("negative")
+)
+```
+
+### toExit
+
+Convert a Result to an Effect Exit.
+
+```typescript
+const toExit: <A, E>(
+  self: Result<A, E>
+) => Exit.Exit<A, E | Cause.NoSuchElementException>
+```
+
+**Example**
+
+```typescript
+const result = Result.success(42)
+const exit = Result.toExit(result)
+// Exit.succeed(42)
+```
+
+## Pattern matching
+
+### match
+
+Pattern match on all three states.
+
+```typescript
+const match: {
+  <A, E, X, Y, Z>(options: {
+    readonly onInitial: (_: Initial<A, E>) => X
+    readonly onFailure: (_: Failure<A, E>) => Y
+    readonly onSuccess: (_: Success<A, E>) => Z
+  }): (self: Result<A, E>) => X | Y | Z
+}
+```
+
+<ParamField path="options.onInitial" type="function">
+  Handler for Initial state
+</ParamField>
+
+<ParamField path="options.onFailure" type="function">
+  Handler for Failure state
+</ParamField>
+
+<ParamField path="options.onSuccess" type="function">
+  Handler for Success state
+</ParamField>
+
+**Example**
+
+```typescript
+const message = Result.match(result, {
+  onInitial: () => "Loading...",
+  onFailure: (f) => `Error: ${Cause.pretty(f.cause)}`,
+  onSuccess: (s) => `Value: ${s.value}`
+})
+```
+
+### matchWithError
+
+Pattern match with separate error and defect handlers.
+
+```typescript
+const matchWithError: {
+  <A, E, W, X, Y, Z>(options: {
+    readonly onInitial: (_: Initial<A, E>) => W
+    readonly onError: (error: E, _: Failure<A, E>) => X
+    readonly onDefect: (defect: unknown, _: Failure<A, E>) => Y
+    readonly onSuccess: (_: Success<A, E>) => Z
+  }): (self: Result<A, E>) => W | X | Y | Z
+}
+```
+
+**Example**
+
+```typescript
+const message = Result.matchWithError(result, {
+  onInitial: () => "Loading...",
+  onError: (error) => `Error: ${error}`,
+  onDefect: (defect) => `Unexpected: ${defect}`,
+  onSuccess: (s) => `Value: ${s.value}`
+})
+```
+
+### matchWithWaiting
+
+Pattern match with a special handler for waiting states.
+
+```typescript
+const matchWithWaiting: {
+  <A, E, W, X, Y, Z>(options: {
+    readonly onWaiting: (_: Result<A, E>) => W
+    readonly onError: (error: E, _: Failure<A, E>) => X
+    readonly onDefect: (defect: unknown, _: Failure<A, E>) => Y
+    readonly onSuccess: (_: Success<A, E>) => Z
+  }): (self: Result<A, E>) => W | X | Y | Z
+}
+```
+
+**Example**
+
+```typescript
+const message = Result.matchWithWaiting(result, {
+  onWaiting: () => "Refreshing...",
+  onError: (error) => `Error: ${error}`,
+  onDefect: (defect) => `Unexpected: ${defect}`,
+  onSuccess: (s) => `Value: ${s.value}`
+})
+```
+
+## Builder API
+
+### builder
+
+Create a fluent builder for pattern matching.
+
+```typescript
+const builder: <A extends Result<any, any>>(self: A) => Builder<...>
+```
+
+The builder provides a fluent API for pattern matching with automatic type narrowing.
+
+**Example**
+
+```typescript
+const message = Result.builder(result)
+  .onSuccess((value) => `Success: ${value}`)
+  .onError((error) => `Error: ${error}`)
+  .onWaiting(() => "Loading...")
+  .orElse(() => "Unknown state")
+
+// With typed errors
+type AppError = 
+  | { _tag: "NetworkError"; message: string }
+  | { _tag: "ValidationError"; field: string }
+
+const result: Result<User, AppError> = fetchUser()
+
+const message = Result.builder(result)
+  .onSuccess((user) => `Hello ${user.name}`)
+  .onErrorTag("NetworkError", (err) => `Network: ${err.message}`)
+  .onErrorTag("ValidationError", (err) => `Invalid ${err.field}`)
+  .onWaiting(() => "Loading...")
+  .orNull()
+```
+
+**Builder methods**
+
+<ParamField path="onSuccess" type="function">
+  Handle success case
+</ParamField>
+
+<ParamField path="onFailure" type="function">
+  Handle failure case
+</ParamField>
+
+<ParamField path="onError" type="function">
+  Handle error failures
+</ParamField>
+
+<ParamField path="onErrorTag" type="function">
+  Handle specific tagged errors
+</ParamField>
+
+<ParamField path="onErrorIf" type="function">
+  Handle errors matching a predicate
+</ParamField>
+
+<ParamField path="onDefect" type="function">
+  Handle defect failures
+</ParamField>
+
+<ParamField path="onInitial" type="function">
+  Handle initial state
+</ParamField>
+
+<ParamField path="onWaiting" type="function">
+  Handle any waiting state
+</ParamField>
+
+<ParamField path="orElse" type="function">
+  Provide default value
+</ParamField>
+
+<ParamField path="orNull" type="function">
+  Return null if unhandled
+</ParamField>
+
+<ParamField path="render" type="function">
+  Return value or throw if unhandled
+</ParamField>
+
+## Combining results
+
+### all
+
+Combine multiple results into one.
+
+```typescript
+const all: <const Arg extends Iterable<any> | Record<string, any>>(
+  results: Arg
+) => Result<...>
+```
+
+Returns a Success only if all results are Success. Preserves the structure (array or object).
+
+**Example - Array**
+
+```typescript
+const results = [
+  Result.success(1),
+  Result.success(2),
+  Result.success(3)
+]
+
+const combined = Result.all(results)
+// { _tag: "Success", value: [1, 2, 3] }
+```
+
+**Example - Object**
+
+```typescript
+const results = {
+  user: Result.success({ id: 1, name: "Alice" }),
+  posts: Result.success([{ id: 1, title: "Hello" }])
+}
+
+const combined = Result.all(results)
+// { _tag: "Success", value: { user: {...}, posts: [...] } }
+```
+
+**Example - Mixed with non-Result values**
+
+```typescript
+const combined = Result.all({
+  dynamic: Result.success(42),
+  static: "constant value"
+})
+// { _tag: "Success", value: { dynamic: 42, static: "constant value" } }
+```
+
+## Schema integration
+
+### Schema
+
+Create a Schema for encoding/decoding Result values.
+
+```typescript
+const Schema: <
+  Success extends Schema_.Schema.All = typeof Schema_.Never,
+  Error extends Schema_.Schema.All = typeof Schema_.Never
+>(options: {
+  readonly success?: Success | undefined
+  readonly error?: Error | undefined
+}) => Schema<Success, Error>
+```
+
+<ParamField path="options.success" type="Schema">
+  Schema for the success value
+</ParamField>
+
+<ParamField path="options.error" type="Schema">
+  Schema for the error value
+</ParamField>
+
+**Example**
+
+```typescript
+import { Schema } from "effect"
+
+const UserResultSchema = Result.Schema({
+  success: Schema.Struct({
+    id: Schema.Number,
+    name: Schema.String
+  }),
+  error: Schema.String
+})
+
+// Encode for serialization
+const result = Result.success({ id: 1, name: "Alice" })
+const encoded = Schema.encodeSync(UserResultSchema)(result)
+
+// Decode from serialized form
+const decoded = Schema.decodeSync(UserResultSchema)(encoded)
+```
+
+## Type helpers
+
+### Result.Success
+
+Extract the success type from a Result type.
+
+```typescript
+type Success<R> = R extends Result<infer A, infer _> ? A : never
+```
+
+### Result.Failure
+
+Extract the error type from a Result type.
+
+```typescript
+type Failure<R> = R extends Result<infer _, infer E> ? E : never
+```

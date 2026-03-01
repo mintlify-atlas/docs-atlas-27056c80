@@ -1,0 +1,469 @@
+---
+title: "AtomRpc"
+description: "RPC client integration for Effect Atom with reactive query and mutation support"
+---
+
+## Overview
+
+AtomRpc provides a reactive RPC client integration for Effect Atom, built on top of `@effect/rpc`. It enables you to create type-safe RPC clients with automatic reactivity, caching, state management, and streaming support.
+
+## Tag
+
+Creates an AtomRpc client tag with reactive query and mutation methods.
+
+<ParamField path="id" type="string" required>
+  Unique identifier for the RPC client service.
+</ParamField>
+
+<ParamField path="options" type="object" required>
+  Configuration options for the RPC client.
+  
+  <Expandable title="properties">
+    <ParamField path="group" type="RpcGroup" required>
+      The RPC group containing all RPC request definitions.
+    </ParamField>
+    
+    <ParamField path="protocol" type="Layer.Layer" required>
+      Layer providing the RPC protocol implementation and any required context.
+    </ParamField>
+    
+    <ParamField path="spanPrefix" type="string">
+      Prefix for tracing spans. Useful for identifying RPC calls in observability tools.
+    </ParamField>
+    
+    <ParamField path="spanAttributes" type="Record<string, unknown>">
+      Additional attributes to attach to tracing spans.
+    </ParamField>
+    
+    <ParamField path="generateRequestId" type="() => RequestId">
+      Custom function to generate request IDs for RPC calls.
+    </ParamField>
+    
+    <ParamField path="disableTracing" type="boolean">
+      Disable automatic tracing for RPC calls. Default is `false`.
+    </ParamField>
+    
+    <ParamField path="makeEffect" type="Effect">
+      Custom effect for creating the RPC client. Overrides default client creation.
+    </ParamField>
+    
+    <ParamField path="runtime" type="RuntimeFactory">
+      Custom runtime factory for the atom client. Defaults to `Atom.runtime`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="AtomRpcClient" type="object">
+  A tagged RPC client with reactive methods.
+  
+  <Expandable title="properties">
+    <ResponseField name="Tag" type="Context.Tag">
+      Context tag for dependency injection.
+    </ResponseField>
+    
+    <ResponseField name="layer" type="Layer.Layer">
+      Effect Layer for providing the RPC client.
+    </ResponseField>
+    
+    <ResponseField name="runtime" type="AtomRuntime">
+      Runtime instance for executing effects.
+    </ResponseField>
+    
+    <ResponseField name="query" type="function">
+      Creates a reactive atom for RPC queries with caching support. Supports both regular responses and streams.
+    </ResponseField>
+    
+    <ResponseField name="mutation" type="function">
+      Creates a mutation function for RPC requests with reactivity integration.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```typescript
+import * as Rpc from "@effect/rpc/Rpc"
+import * as RpcGroup from "@effect/rpc/RpcGroup"
+import * as RpcSchema from "@effect/rpc/RpcSchema"
+import * as AtomRpc from "@effect-atom/atom/AtomRpc"
+import * as Schema from "effect/Schema"
+import * as Layer from "effect/Layer"
+
+// Define your RPC requests
+class GetUser extends Rpc.StreamRequest<"GetUser", { id: string }, { id: string; name: string }, never> {
+  readonly tag = "GetUser"
+  readonly payload = Schema.Struct({ id: Schema.String })
+  readonly success = Schema.Struct({ id: Schema.String, name: Schema.String })
+  readonly failure = Schema.Never
+}
+
+class ListUsers extends Rpc.Request<"ListUsers", {}, ReadonlyArray<{ id: string; name: string }>, never> {
+  readonly tag = "ListUsers"
+  readonly payload = Schema.Struct({})
+  readonly success = Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String }))
+  readonly failure = Schema.Never
+}
+
+// Create RPC group
+const UsersRpc = RpcGroup.make(GetUser, ListUsers)
+
+// Create the RPC client
+interface MyRpcClient {}
+const MyRpcClient = AtomRpc.Tag<MyRpcClient>()("MyRpcClient", {
+  group: UsersRpc,
+  protocol: RpcHttpClient.layer({
+    url: "https://api.example.com/rpc"
+  })
+})
+```
+
+## query
+
+Creates a reactive atom that executes an RPC query. The atom automatically caches results and supports both regular responses and streaming responses.
+
+<ParamField path="tag" type="Tag" required>
+  The RPC request tag identifying which RPC to call.
+</ParamField>
+
+<ParamField path="payload" type="PayloadConstructor" required>
+  The payload data for the RPC request.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Additional options for the query.
+  
+  <Expandable title="properties">
+    <ParamField path="headers" type="Headers.Input">
+      HTTP headers to include with the RPC request.
+    </ParamField>
+    
+    <ParamField path="reactivityKeys" type="ReadonlyArray<unknown> | Record<string, ReadonlyArray<unknown>>">
+      Keys for cache invalidation integration with reactive mutations.
+    </ParamField>
+    
+    <ParamField path="timeToLive" type="Duration.DurationInput">
+      Cache duration. Use `Duration.infinity` to keep the atom alive indefinitely.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="atom" type="Atom<Result<Success, Error>> | Writable<PullResult<A, E>, void>">
+  For regular RPCs, returns an atom containing the result. For streaming RPCs, returns a writable atom with pull-based streaming support.
+</ResponseField>
+
+### Example with regular RPC
+
+```typescript
+import * as Duration from "effect/Duration"
+
+// Create a query atom for fetching users
+const usersAtom = MyRpcClient.query(ListUsers.tag, {}, {
+  timeToLive: Duration.minutes(5),
+  reactivityKeys: ["users"]
+})
+
+// Use in a React component
+function UsersList() {
+  const users = useAtomValue(usersAtom)
+  
+  return Result.match(users, {
+    Initial: () => <div>Loading...</div>,
+    Pending: () => <div>Loading...</div>,
+    Success: (data) => (
+      <ul>
+        {data.map(user => (
+          <li key={user.id}>{user.name}</li>
+        ))}
+      </ul>
+    ),
+    Failure: (error) => <div>Error: {error.message}</div>
+  })
+}
+```
+
+### Example with streaming RPC
+
+```typescript
+// Define a streaming RPC
+class StreamUsers extends RpcSchema.StreamRequest<
+  "StreamUsers",
+  {},
+  { id: string; name: string },
+  never
+> {
+  readonly tag = "StreamUsers"
+  readonly payload = Schema.Struct({})
+  readonly success = RpcSchema.stream(Schema.Struct({
+    id: Schema.String,
+    name: Schema.String
+  }))
+  readonly failure = Schema.Never
+}
+
+// Create a streaming query
+function UsersStream() {
+  const streamAtom = MyRpcClient.query(StreamUsers.tag, {})
+  const result = useAtomValue(streamAtom)
+  
+  return (
+    <div>
+      {Result.match(result, {
+        Initial: () => <div>Waiting...</div>,
+        Pending: () => <div>Streaming...</div>,
+        Success: (user) => (
+          <div>Received: {user.name}</div>
+        ),
+        Failure: (error) => <div>Error: {error.message}</div>
+      })}
+    </div>
+  )
+}
+```
+
+<Note>
+  Query atoms use structural equality for payload parameters. Two queries with the same tag and payload will share the same atom instance and cached data.
+</Note>
+
+## mutation
+
+Creates a mutation function for executing RPC requests that modify data. Mutations integrate with the reactivity system to automatically invalidate related query caches.
+
+<ParamField path="tag" type="Tag" required>
+  The RPC request tag identifying which RPC to call.
+</ParamField>
+
+### Returns
+
+<ResponseField name="mutationFn" type="AtomResultFn">
+  A function that accepts a request object and returns a Result.
+  
+  The request parameter includes:
+  - `payload` - The RPC payload data
+  - `headers` - Optional HTTP headers
+  - `reactivityKeys` - Keys to invalidate after successful mutation
+</ResponseField>
+
+### Example
+
+```typescript
+// Define a mutation RPC
+class CreateUser extends Rpc.Request<
+  "CreateUser",
+  { name: string; email: string },
+  { id: string; name: string; email: string },
+  never
+> {
+  readonly tag = "CreateUser"
+  readonly payload = Schema.Struct({
+    name: Schema.String,
+    email: Schema.String
+  })
+  readonly success = Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    email: Schema.String
+  })
+  readonly failure = Schema.Never
+}
+
+// Use the mutation
+function CreateUserForm() {
+  const createUser = MyRpcClient.mutation(CreateUser.tag)
+  const result = useAtomValue(createUser)
+  
+  const handleSubmit = async (name: string, email: string) => {
+    await createUser({
+      payload: { name, email },
+      // Invalidate user queries after successful creation
+      reactivityKeys: ["users"]
+    })
+  }
+  
+  return (
+    <form onSubmit={(e) => {
+      e.preventDefault()
+      const formData = new FormData(e.currentTarget)
+      handleSubmit(
+        formData.get('name') as string,
+        formData.get('email') as string
+      )
+    }}>
+      <input name="name" placeholder="Name" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <button type="submit" disabled={Result.isPending(result)}>
+        {Result.isPending(result) ? "Creating..." : "Create User"}
+      </button>
+      {Result.isFailure(result) && (
+        <div>Error: {result.error.message}</div>
+      )}
+      {Result.isSuccess(result) && (
+        <div>Created user: {result.value.name}</div>
+      )}
+    </form>
+  )
+}
+```
+
+<Warning>
+  Mutations automatically invalidate queries with matching reactivity keys. Ensure you use consistent keys across your queries and mutations for proper cache invalidation.
+</Warning>
+
+<Note>
+  Stream RPCs cannot be used with mutations. Attempting to create a mutation for a streaming RPC will result in a compile-time type error.
+</Note>
+
+## Complete integration example
+
+Here's a complete example showing how to set up and use AtomRpc in an application:
+
+```typescript
+import * as Rpc from "@effect/rpc/Rpc"
+import * as RpcGroup from "@effect/rpc/RpcGroup"
+import * as RpcHttpClient from "@effect/rpc-http/RpcHttpClient"
+import * as AtomRpc from "@effect-atom/atom/AtomRpc"
+import * as Schema from "effect/Schema"
+import * as Duration from "effect/Duration"
+
+// 1. Define your data schemas
+const User = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  email: Schema.String
+})
+
+// 2. Define your RPC requests
+class GetUser extends Rpc.Request<
+  "GetUser",
+  { id: string },
+  Schema.Schema.Type<typeof User>,
+  never
+> {
+  readonly tag = "GetUser"
+  readonly payload = Schema.Struct({ id: Schema.String })
+  readonly success = User
+  readonly failure = Schema.Never
+}
+
+class ListUsers extends Rpc.Request<
+  "ListUsers",
+  {},
+  ReadonlyArray<Schema.Schema.Type<typeof User>>,
+  never
+> {
+  readonly tag = "ListUsers"
+  readonly payload = Schema.Struct({})
+  readonly success = Schema.Array(User)
+  readonly failure = Schema.Never
+}
+
+class CreateUser extends Rpc.Request<
+  "CreateUser",
+  { name: string; email: string },
+  Schema.Schema.Type<typeof User>,
+  never
+> {
+  readonly tag = "CreateUser"
+  readonly payload = Schema.Struct({
+    name: Schema.String,
+    email: Schema.String
+  })
+  readonly success = User
+  readonly failure = Schema.Never
+}
+
+// 3. Create RPC group
+const UsersRpc = RpcGroup.make(GetUser, ListUsers, CreateUser)
+
+// 4. Create the AtomRpc client
+interface UsersRpcClient {}
+const UsersRpcClient = AtomRpc.Tag<UsersRpcClient>()("UsersRpcClient", {
+  group: UsersRpc,
+  protocol: RpcHttpClient.layer({
+    url: "https://api.example.com/rpc"
+  })
+})
+
+// 5. Use in your application
+function UsersPage() {
+  const usersAtom = UsersRpcClient.query(ListUsers.tag, {}, {
+    timeToLive: Duration.minutes(5),
+    reactivityKeys: ["users"]
+  })
+  
+  const users = useAtomValue(usersAtom)
+  const createUser = UsersRpcClient.mutation(CreateUser.tag)
+  
+  return (
+    <div>
+      <h1>Users</h1>
+      
+      {Result.match(users, {
+        Initial: () => <div>Loading...</div>,
+        Pending: () => <div>Loading...</div>,
+        Success: (data) => (
+          <ul>
+            {data.map(user => (
+              <li key={user.id}>
+                {user.name} - {user.email}
+              </li>
+            ))}
+          </ul>
+        ),
+        Failure: (error) => <div>Error loading users</div>
+      })}
+      
+      <CreateUserForm mutation={createUser} />
+    </div>
+  )
+}
+
+function CreateUserForm({ mutation }: { mutation: AtomResultFn }) {
+  const result = useAtomValue(mutation)
+  
+  return (
+    <form onSubmit={async (e) => {
+      e.preventDefault()
+      const formData = new FormData(e.currentTarget)
+      
+      await mutation({
+        payload: {
+          name: formData.get('name') as string,
+          email: formData.get('email') as string
+        },
+        reactivityKeys: ["users"] // Invalidates the users list
+      })
+      
+      if (Result.isSuccess(result)) {
+        e.currentTarget.reset()
+      }
+    }}>
+      <input name="name" placeholder="Name" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <button type="submit" disabled={Result.isPending(result)}>
+        {Result.isPending(result) ? "Creating..." : "Add User"}
+      </button>
+      {Result.isFailure(result) && (
+        <div>Error: {result.error.message}</div>
+      )}
+    </form>
+  )
+}
+```
+
+## Type safety
+
+AtomRpc maintains full type safety from your RPC definitions:
+
+- **Payloads** are typed based on the RPC's payload schema
+- **Success responses** are typed according to the RPC's success schema
+- **Errors** include the RPC error type, middleware failures, and RPC client errors
+- **Stream detection** automatically determines if an RPC returns a stream, changing the atom type accordingly
+- **Auto-completion** works for RPC tags and all payload parameters
+
+<Note>
+  The client uses structural equality for caching, so atoms with identical tag and payload will share the same cached instance.
+</Note>

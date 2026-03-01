@@ -1,0 +1,277 @@
+---
+title: useAtom
+description: Read and write atom values in React components
+---
+
+## Overview
+
+The `useAtom` hook provides both read and write access to an atom. It returns a tuple containing the current value and a setter function, similar to React's `useState` but for atoms.
+
+## Signature
+
+```typescript
+export const useAtom: <R, W, const Mode extends "value" | "promise" | "promiseExit" = never>(
+  atom: Atom.Writable<R, W>,
+  options?: {
+    readonly mode?: ([R] extends [Result.Result<any, any>] ? Mode : "value") | undefined
+  }
+) => readonly [
+  value: R,
+  write: "promise" extends Mode ? (
+      (value: W) => Promise<Result.Result.Success<R>>
+    ) :
+    "promiseExit" extends Mode ? (
+        (value: W) => Promise<Exit.Exit<Result.Result.Success<R>, Result.Result.Failure<R>>>
+      ) :
+    ((value: W | ((value: R) => W)) => void)
+]
+```
+
+## Parameters
+
+<ParamField path="atom" type="Atom.Writable<R, W>" required>
+  A writable atom that stores values of type `R` and accepts write values of type `W`.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for the setter behavior.
+  
+  <ParamField path="options.mode" type="'value' | 'promise' | 'promiseExit'">
+    Determines the return type of the setter function:
+    - `"value"` (default): Returns `void`, synchronous updates
+    - `"promise"`: Returns a promise that resolves to the result value
+    - `"promiseExit"`: Returns a promise that resolves to an `Exit` (includes failures)
+  </ParamField>
+</ParamField>
+
+## Returns
+
+<ResponseField name="[value, setter]" type="readonly [R, Function]">
+  A readonly tuple containing:
+  
+  1. **value** (`R`): The current value of the atom
+  2. **setter** (Function): A function to update the atom, whose signature depends on the `mode` option:
+     - Default: `(value: W | ((current: R) => W)) => void`
+     - Promise mode: `(value: W) => Promise<Result.Success<R>>`
+     - PromiseExit mode: `(value: W) => Promise<Exit>`
+</ResponseField>
+
+## Usage
+
+### Basic counter example
+
+Simple state management with an atom:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const countAtom = Atom.make(0)
+
+function Counter() {
+  const [count, setCount] = useAtom(countAtom)
+  
+  return (
+    <div>
+      <p>Count: {count}</p>
+      <button onClick={() => setCount(count + 1)}>Increment</button>
+      <button onClick={() => setCount(c => c - 1)}>Decrement</button>
+      <button onClick={() => setCount(0)}>Reset</button>
+    </div>
+  )
+}
+```
+
+### Form state management
+
+Manage form state with an atom:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+interface FormData {
+  username: string
+  email: string
+}
+
+const formAtom = Atom.make<FormData>({
+  username: "",
+  email: ""
+})
+
+function UserForm() {
+  const [form, setForm] = useAtom(formAtom)
+  
+  return (
+    <form>
+      <input
+        value={form.username}
+        onChange={(e) => setForm(f => ({ ...f, username: e.target.value }))}
+        placeholder="Username"
+      />
+      <input
+        value={form.email}
+        onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
+        placeholder="Email"
+      />
+    </form>
+  )
+}
+```
+
+### Functional updates
+
+Update based on the current value:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const todosAtom = Atom.make([
+  { id: 1, text: "Learn Effect", completed: false }
+])
+
+function TodoList() {
+  const [todos, setTodos] = useAtom(todosAtom)
+  
+  const toggleTodo = (id: number) => {
+    setTodos(currentTodos =>
+      currentTodos.map(todo =>
+        todo.id === id ? { ...todo, completed: !todo.completed } : todo
+      )
+    )
+  }
+  
+  return (
+    <ul>
+      {todos.map(todo => (
+        <li key={todo.id} onClick={() => toggleTodo(todo.id)}>
+          {todo.completed ? "✓" : "○"} {todo.text}
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### Promise mode with async atoms
+
+Wait for async operations to complete:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+import { Effect } from "effect"
+
+const dataAtom = Atom.makeWithEffect(
+  (get, set, newData: string) =>
+    Effect.gen(function* () {
+      yield* Effect.sleep("500 millis")
+      // Perform async operation
+      return { data: newData, timestamp: Date.now() }
+    })
+)
+
+function DataEditor() {
+  const [data, updateData] = useAtom(dataAtom, { mode: "promise" })
+  
+  const handleSave = async (newValue: string) => {
+    try {
+      const result = await updateData(newValue)
+      console.log("Saved at:", result.value.timestamp)
+    } catch (error) {
+      console.error("Failed to save:", error)
+    }
+  }
+  
+  return (
+    <div>
+      <pre>{JSON.stringify(data, null, 2)}</pre>
+      <button onClick={() => handleSave("new value")}>Save</button>
+    </div>
+  )
+}
+```
+
+### Toggle state
+
+Manage boolean state:
+
+```tsx
+import { useAtom } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const isOpenAtom = Atom.make(false)
+
+function TogglePanel() {
+  const [isOpen, setIsOpen] = useAtom(isOpenAtom)
+  
+  return (
+    <div>
+      <button onClick={() => setIsOpen(o => !o)}>
+        {isOpen ? "Close" : "Open"}
+      </button>
+      {isOpen && (
+        <div className="panel">
+          Panel content
+        </div>
+      )}
+    </div>
+  )
+}
+```
+
+### Derived atoms
+
+Use atoms that compute values from other atoms:
+
+```tsx
+import { useAtom, useAtomValue } from "@effect-atom/atom-react"
+import { Atom } from "@effect-atom/atom"
+
+const priceAtom = Atom.make(100)
+const quantityAtom = Atom.make(1)
+
+const totalAtom = Atom.makeComputed((get) => {
+  const price = get(priceAtom)
+  const quantity = get(quantityAtom)
+  return price * quantity
+})
+
+function PriceCalculator() {
+  const [quantity, setQuantity] = useAtom(quantityAtom)
+  const total = useAtomValue(totalAtom)
+  
+  return (
+    <div>
+      <input
+        type="number"
+        value={quantity}
+        onChange={(e) => setQuantity(parseInt(e.target.value) || 0)}
+      />
+      <p>Total: ${total}</p>
+    </div>
+  )
+}
+```
+
+## Best practices
+
+<Note>
+  The setter function is memoized and remains stable across re-renders. You can safely include it in dependency arrays or pass it to child components.
+</Note>
+
+<Note>
+  When you only need to read or write (not both), use `useAtomValue` or `useAtomSet` instead for better performance. They prevent unnecessary re-renders.
+</Note>
+
+<Warning>
+  Functional updates using `(current) => next` are recommended when the new value depends on the current value. This ensures you're always working with the latest state.
+</Warning>
+
+## Related hooks
+
+- [useAtomValue](/api/hooks/use-atom-value) - Read-only access to atoms
+- [useAtomSet](/api/hooks/use-atom-set) - Write-only access to atoms
+- [useAtomSuspense](/api/hooks/use-atom-suspense) - Read async atoms with Suspense

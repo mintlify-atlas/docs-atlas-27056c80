@@ -1,0 +1,441 @@
+---
+title: Real-time sync with Livestore
+description: Use AtomLivestore for offline-first, real-time data synchronization
+---
+
+## Overview
+
+The `AtomLivestore` module provides integration between Effect Atom and [Livestore](https://livestore.dev), enabling offline-first, real-time data synchronization with local-first architecture.
+
+<Note>
+Livestore is a local-first database that automatically syncs with your backend. It provides reactive queries, optimistic updates, and conflict resolution out of the box.
+</Note>
+
+## Installation
+
+```bash
+pnpm add @effect-atom/atom-livestore @livestore/livestore
+```
+
+## Creating a Livestore client
+
+Use `AtomLivestore.Tag` to create a special `Context.Tag` that builds a Livestore instance:
+
+```ts
+import { AtomLivestore } from "@effect-atom/atom-livestore"
+import type { LiveStoreSchema } from "@livestore/livestore"
+
+// Define your schema
+interface MySchema extends LiveStoreSchema {
+  users: {
+    id: string
+    name: string
+    email: string
+  }
+  posts: {
+    id: string
+    userId: string
+    title: string
+    content: string
+  }
+}
+
+// Create the Livestore client tag
+class MyStore extends AtomLivestore.Tag<MyStore>()("MyStore", {
+  schema: {
+    users: {
+      primaryKey: "id",
+      fields: {
+        id: { type: "string" },
+        name: { type: "string" },
+        email: { type: "string" }
+      }
+    },
+    posts: {
+      primaryKey: "id",
+      fields: {
+        id: { type: "string" },
+        userId: { type: "string" },
+        title: { type: "string" },
+        content: { type: "string" }
+      },
+      indexes: {
+        userId: { fields: ["userId"] }
+      }
+    }
+  } satisfies CreateStoreOptions<MySchema>
+}) {}
+```
+
+## Type signature
+
+```ts
+interface AtomLiveStore<Self, Id extends string, S extends LiveStoreSchema, Context = {}> {
+  // The layer for providing the store
+  readonly layer: Atom.Atom<Layer.Layer<Self>>
+  
+  // Runtime for creating atoms
+  readonly runtime: Atom.AtomRuntime<Self>
+  
+  // Access the store (with Result)
+  readonly store: Atom.Atom<Result.Result<Store<S, Context>>>
+  
+  // Access the store (unsafe, may be undefined)
+  readonly storeUnsafe: Atom.Atom<Store<S, Context> | undefined>
+  
+  // Create a reactive query atom
+  readonly makeQuery: <A>(
+    query: LiveQueryDef<A> | ((get: Atom.Context) => LiveQueryDef<A>)
+  ) => Atom.Atom<Result.Result<A>>
+  
+  // Create a reactive query atom (unsafe)
+  readonly makeQueryUnsafe: <A>(
+    query: LiveQueryDef<A> | ((get: Atom.Context) => LiveQueryDef<A>)
+  ) => Atom.Atom<A | undefined>
+  
+  // Commit events to the store
+  readonly commit: Atom.Writable<void, {}>
+}
+```
+
+## Querying data
+
+Create reactive queries that automatically update when data changes:
+
+<CodeGroup>
+
+```tsx Single document
+import { useAtomValue } from "@effect-atom/atom-react"
+
+const userAtom = MyStore.makeQuery({
+  table: "users",
+  where: { id: "user-123" }
+})
+
+function UserProfile() {
+  const result = useAtomValue(userAtom)
+  
+  return Result.builder(result)
+    .onInitial(() => <div>Loading...</div>)
+    .onSuccess((user) => (
+      <div>
+        <h1>{user.name}</h1>
+        <p>{user.email}</p>
+      </div>
+    ))
+    .render()
+}
+```
+
+```tsx Collection query
+const usersAtom = MyStore.makeQuery({
+  table: "users",
+  orderBy: { field: "name", direction: "asc" }
+})
+
+function UsersList() {
+  const result = useAtomValue(usersAtom)
+  
+  return Result.builder(result)
+    .onSuccess((users) => (
+      <ul>
+        {users.map((user) => (
+          <li key={user.id}>{user.name}</li>
+        ))}
+      </ul>
+    ))
+    .render()
+}
+```
+
+```tsx Parameterized query
+import { Atom } from "@effect-atom/atom-react"
+
+const userPostsAtom = Atom.family((userId: string) =>
+  MyStore.makeQuery({
+    table: "posts",
+    where: { userId },
+    orderBy: { field: "createdAt", direction: "desc" }
+  })
+)
+
+function UserPosts({ userId }: { userId: string }) {
+  const result = useAtomValue(userPostsAtom(userId))
+  // ...
+}
+```
+
+</CodeGroup>
+
+## Mutating data
+
+Commit events to modify data in the store:
+
+<CodeGroup>
+
+```tsx Create
+import { useAtomSet } from "@effect-atom/atom-react"
+
+function CreateUser() {
+  const commit = useAtomSet(MyStore.commit)
+  
+  const handleCreate = () => {
+    commit({
+      type: "users.create",
+      payload: {
+        id: crypto.randomUUID(),
+        name: "Alice",
+        email: "alice@example.com"
+      }
+    })
+  }
+  
+  return <button onClick={handleCreate}>Create user</button>
+}
+```
+
+```tsx Update
+function UpdateUser({ id }: { id: string }) {
+  const commit = useAtomSet(MyStore.commit)
+  
+  const handleUpdate = () => {
+    commit({
+      type: "users.update",
+      payload: {
+        id,
+        name: "Alice Updated"
+      }
+    })
+  }
+  
+  return <button onClick={handleUpdate}>Update user</button>
+}
+```
+
+```tsx Delete
+function DeleteUser({ id }: { id: string }) {
+  const commit = useAtomSet(MyStore.commit)
+  
+  const handleDelete = () => {
+    commit({
+      type: "users.delete",
+      payload: { id }
+    })
+  }
+  
+  return <button onClick={handleDelete}>Delete user</button>
+}
+```
+
+</CodeGroup>
+
+## Direct store access
+
+Access the Livestore instance directly for advanced operations:
+
+```ts
+const customAtom = Atom.make((get) => {
+  const store = get(MyStore.storeUnsafe)
+  
+  if (!store) {
+    return []
+  }
+  
+  // Use Livestore APIs directly
+  const users = store.query({
+    table: "users",
+    where: { email: { $contains: "@example.com" } }
+  })
+  
+  return users
+})
+```
+
+## Offline-first features
+
+### Automatic synchronization
+
+Livestore automatically syncs changes with your backend:
+
+```ts
+class MyStore extends AtomLivestore.Tag<MyStore>()("MyStore", {
+  schema: mySchema,
+  // Configure sync endpoint
+  syncUrl: "https://api.example.com/sync",
+  // Optional: configure sync behavior
+  syncInterval: 5000, // Sync every 5 seconds
+  syncOnConnect: true
+}) {}
+```
+
+### Conflict resolution
+
+Livestore handles conflicts automatically using CRDTs:
+
+<Warning>
+Ensure your backend is configured to handle Livestore's sync protocol. See [Livestore documentation](https://livestore.dev) for server setup.
+</Warning>
+
+### Optimistic updates
+
+Changes are applied immediately to the local store, then synced:
+
+```tsx
+function IncrementCounter({ id }: { id: string }) {
+  const commit = useAtomSet(MyStore.commit)
+  const counter = useAtomValue(MyStore.makeQuery({
+    table: "counters",
+    where: { id }
+  }))
+  
+  const handleIncrement = () => {
+    // This is applied immediately, even while offline
+    commit({
+      type: "counters.update",
+      payload: {
+        id,
+        value: Result.getOrElse(counter, () => ({ value: 0 })).value + 1
+      }
+    })
+  }
+  
+  return <button onClick={handleIncrement}>Increment</button>
+}
+```
+
+## Using with Effect services
+
+Integrate Livestore into your Effect services:
+
+```ts
+import { Effect } from "effect"
+
+class UserService extends Effect.Service<UserService>()("UserService", {
+  dependencies: [MyStore.layer],
+  effect: Effect.gen(function*() {
+    const store = yield* MyStore
+    
+    const createUser = (name: string, email: string) =>
+      Effect.sync(() => {
+        store.commit({
+          type: "users.create",
+          payload: {
+            id: crypto.randomUUID(),
+            name,
+            email
+          }
+        })
+      })
+    
+    const getUser = (id: string) =>
+      Effect.sync(() =>
+        store.query({ table: "users", where: { id } })
+      )
+    
+    return { createUser, getUser } as const
+  })
+}) {}
+
+// Use in atoms
+const createUserAtom = MyStore.runtime.fn(
+  Effect.fnUntraced(function*(name: string, email: string) {
+    const service = yield* UserService
+    yield* service.createUser(name, email)
+  })
+)
+```
+
+## OpenTelemetry integration
+
+Enable tracing for Livestore operations:
+
+```ts
+import { NodeSdk } from "@opentelemetry/sdk-node"
+
+const sdk = new NodeSdk({
+  // Your OpenTelemetry config
+})
+sdk.start()
+
+class MyStore extends AtomLivestore.Tag<MyStore>()("MyStore", {
+  schema: mySchema,
+  otelOptions: {
+    tracer: sdk.getTracer("my-app")
+  }
+}) {}
+```
+
+## Dynamic configuration
+
+Configure the store dynamically based on atom context:
+
+```ts
+const userIdAtom = Atom.make("user-123")
+
+class UserStore extends AtomLivestore.Tag<UserStore>()("UserStore", (get) => ({
+  schema: mySchema,
+  // Access other atoms to configure the store
+  syncUrl: `https://api.example.com/sync/${get(userIdAtom)}`
+})) {}
+```
+
+## Best practices
+
+<Steps>
+
+### Design your schema carefully
+
+Define indexes for fields you'll query frequently:
+
+```ts
+schema: {
+  posts: {
+    primaryKey: "id",
+    fields: { /* ... */ },
+    indexes: {
+      userId: { fields: ["userId"] },
+      createdAt: { fields: ["createdAt"] }
+    }
+  }
+}
+```
+
+### Use parameterized queries
+
+Leverage `Atom.family` for reusable, parameterized queries:
+
+```ts
+const postAtom = Atom.family((id: string) =>
+  MyStore.makeQuery({ table: "posts", where: { id } })
+)
+```
+
+### Handle loading states
+
+Always handle the `Initial` state for better UX:
+
+```ts
+Result.builder(result)
+  .onInitial(() => <Skeleton />)
+  .onSuccess((data) => <Content data={data} />)
+  .render()
+```
+
+### Batch commits when possible
+
+Group related changes into a single commit for better performance:
+
+```ts
+commit([
+  { type: "users.update", payload: { id: "1", name: "Alice" } },
+  { type: "posts.create", payload: { id: "2", userId: "1", title: "Hello" } }
+])
+```
+
+</Steps>
+
+## Resources
+
+- [Livestore documentation](https://livestore.dev)
+- [Livestore GitHub](https://github.com/livestore/livestore)
+- [Local-first software principles](https://www.inkandswitch.com/local-first/)

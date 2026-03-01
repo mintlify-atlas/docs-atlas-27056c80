@@ -1,0 +1,418 @@
+---
+title: Reactivity integration
+description: Integrate with Effect's Reactivity service for reactive queries and mutations
+---
+
+Effect Atom integrates with the `Reactivity` service from `@effect/experimental` to create reactive queries that automatically refresh when mutations occur.
+
+## Overview
+
+The `Reactivity` service provides a way to:
+
+- Mark queries with **reactivity keys**
+- Invalidate those keys during mutations
+- Automatically refresh affected queries
+
+This pattern is similar to React Query's query invalidation but built on Effect.
+
+## Basic example
+
+Create a query that refreshes when a specific key changes:
+
+```ts
+import { Atom } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const runtimeAtom = Atom.runtime(Layer.empty)
+
+let count = 0
+
+const countAtom = Atom.make(() => count++).pipe(
+  Atom.withReactivity(["counter"])
+)
+```
+
+When you invalidate the `"counter"` key, the atom automatically refreshes:
+
+```ts
+import { Reactivity } from "@effect/experimental"
+
+const incrementMutation = runtimeAtom.fn(
+  Effect.gen(function* () {
+    yield* Effect.log("Incrementing counter")
+    // Invalidate the "counter" key
+    yield* Reactivity.invalidate(["counter"])
+  })
+)
+```
+
+## Using withReactivity
+
+The `Atom.withReactivity` function wraps an atom to make it reactive to key changes.
+
+### Function signature
+
+From `Atom.ts:733-735`:
+
+```ts
+export const withReactivity: (
+  keys: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+) => <A extends Atom<any>>(atom: A) => A
+```
+
+### Array syntax
+
+Refresh when any of these keys change:
+
+```ts
+const userAtom = Atom.make(() => fetchUser()).pipe(
+  Atom.withReactivity(["user", "profile"])
+)
+```
+
+### Object syntax
+
+Refresh when specific key-value combinations change:
+
+```ts
+const userAtom = Atom.make((get) => {
+  const userId = get(userIdAtom)
+  return fetchUser(userId)
+}).pipe(
+  Atom.withReactivity({
+    user: [userId] // Refresh when user:{userId} changes
+  })
+)
+```
+
+## Automatic invalidation in mutations
+
+Use the `reactivityKeys` option to automatically invalidate keys when a mutation completes:
+
+```ts
+const updateUserMutation = runtimeAtom.fn(
+  Effect.gen(function* (name: string) {
+    yield* Effect.log("Updating user")
+    // Update logic here
+  }),
+  {
+    // Automatically invalidate when Effect succeeds
+    reactivityKeys: ["user", "profile"]
+  }
+)
+```
+
+From the README example at line 408-414:
+
+```ts
+const someMutation = runtimeAtom.fn(
+  Effect.fn(function* () {
+    yield* Effect.log("Mutating the counter")
+  }),
+  // Invalidate the "counter" key when the Effect is finished
+  { reactivityKeys: ["counter"] }
+)
+```
+
+<Info>
+  The `reactivityKeys` option only invalidates when the Effect completes
+  successfully. If the Effect fails, keys are not invalidated.
+</Info>
+
+## Manual invalidation
+
+You can also manually invalidate keys within your Effect:
+
+```ts
+import { Reactivity } from "@effect/experimental"
+
+const complexMutation = runtimeAtom.fn(
+  Effect.gen(function* () {
+    yield* Effect.log("Starting complex mutation")
+    
+    // Do some work
+    yield* updateDatabase()
+    
+    // Manually invalidate specific keys
+    yield* Reactivity.invalidate(["users"])
+    
+    // Do more work
+    yield* updateCache()
+    
+    // Invalidate more keys
+    yield* Reactivity.invalidate(["cache"])
+  })
+)
+```
+
+## Complete example with queries and mutations
+
+<Steps>
+  <Step title="Set up runtime and service">
+    Create your Effect services and runtime:
+    
+    ```ts
+    import { Atom } from "@effect-atom/atom-react"
+    import { Effect, Layer } from "effect"
+    
+    class UserService extends Effect.Service<UserService>()(
+      "UserService",
+      {
+        effect: Effect.gen(function* () {
+          const users = new Map([["1", { id: "1", name: "Alice" }]])
+          
+          const getUser = (id: string) =>
+            Effect.succeed(users.get(id))
+          
+          const updateUser = (id: string, name: string) =>
+            Effect.sync(() => {
+              const user = users.get(id)
+              if (user) {
+                user.name = name
+                users.set(id, user)
+              }
+            })
+          
+          return { getUser, updateUser } as const
+        })
+      }
+    ) {}
+    
+    const runtime = Atom.runtime(UserService.Default)
+    ```
+  </Step>
+  
+  <Step title="Create reactive queries">
+    Define atoms that refresh when specific keys change:
+    
+    ```ts
+    const userAtom = Atom.family((userId: string) =>
+      runtime.atom(
+        Effect.gen(function* () {
+          const service = yield* UserService
+          return yield* service.getUser(userId)
+        })
+      ).pipe(
+        Atom.withReactivity({
+          user: [userId] // Refresh when user:{userId} changes
+        })
+      )
+    )
+    ```
+  </Step>
+  
+  <Step title="Create mutations">
+    Define mutations that invalidate queries:
+    
+    ```ts
+    const updateUserMutation = runtime.fn(
+      Effect.gen(function* (args: { id: string; name: string }) {
+        const service = yield* UserService
+        yield* service.updateUser(args.id, args.name)
+      }),
+      {
+        // Invalidate user queries when mutation succeeds
+        reactivityKeys: (args) => ({ user: [args.id] })
+      }
+    )
+    ```
+  </Step>
+  
+  <Step title="Use in components">
+    React to automatic updates:
+    
+    ```tsx
+    import { useAtomValue, useAtomSet } from "@effect-atom/atom-react"
+    import { Result } from "@effect-atom/atom"
+    
+    function UserProfile({ userId }: { userId: string }) {
+      const userResult = useAtomValue(userAtom(userId))
+      const updateUser = useAtomSet(updateUserMutation)
+      
+      return Result.match(userResult, {
+        onSuccess: (user) => (
+          <div>
+            <h1>{user?.name}</h1>
+            <button
+              onClick={() =>
+                updateUser({ id: userId, name: "Bob" })
+              }
+            >
+              Update name
+            </button>
+          </div>
+        ),
+        onFailure: () => <div>Error loading user</div>,
+        onInitial: () => <div>Loading...</div>
+      })
+    }
+    ```
+  </Step>
+</Steps>
+
+## Reactivity keys patterns
+
+### Simple keys
+
+Use simple string keys for global invalidation:
+
+```ts
+Atom.withReactivity(["users", "posts"])
+```
+
+### Namespaced keys
+
+Use the object syntax for granular invalidation:
+
+```ts
+Atom.withReactivity({
+  user: [userId],
+  post: [postId]
+})
+// Matches: user:{userId}, post:{postId}
+```
+
+### Multiple IDs
+
+Invalidate multiple related entities:
+
+```ts
+Atom.withReactivity({
+  user: [userId],
+  friend: friendIds // array of friend IDs
+})
+```
+
+### Dynamic keys from context
+
+Compute keys based on atom values:
+
+```ts
+const postAtom = Atom.make((get) => {
+  const authorId = get(authorIdAtom)
+  return fetchPost()
+}).pipe(
+  Atom.withReactivity((get) => ({
+    author: [get(authorIdAtom)],
+    post: [get(postIdAtom)]
+  }))
+)
+```
+
+## Implementation details
+
+From `Atom.ts:693-704`, the `withReactivity` implementation:
+
+```ts
+factory.withReactivity =
+  (keys: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>) =>
+  <A extends Atom<any>>(atom: A): A =>
+    transform(atom, (get) => {
+      const reactivity = Result.getOrThrow(get(reactivityAtom))
+      get.addFinalizer(reactivity.unsafeRegister(keys, () => {
+        get.refresh(atom)
+      }))
+      get.subscribe(atom, (value) => get.setSelf(value))
+      return get.once(atom)
+    }) as any as A
+```
+
+The function:
+
+1. Gets the `Reactivity` service from the runtime
+2. Registers a callback with the specified keys
+3. When keys are invalidated, calls `get.refresh(atom)` to trigger a re-read
+4. Subscribes to keep the wrapped atom in sync
+
+## Using with RuntimeFactory
+
+The `RuntimeFactory` interface includes `withReactivity`:
+
+```ts
+interface RuntimeFactory {
+  readonly withReactivity: (
+    keys: ReadonlyArray<unknown> | ReadonlyRecord<string, ReadonlyArray<unknown>>
+  ) => <A extends Atom<any>>(atom: A) => A
+}
+```
+
+You can access it through any runtime:
+
+```ts
+const myRuntime = Atom.runtime(myLayer)
+
+const reactiveAtom = myRuntime.withReactivity(["myKey"])(myAtom)
+```
+
+Or use the global runtime:
+
+```ts
+const reactiveAtom = Atom.runtime.withReactivity(["myKey"])(myAtom)
+```
+
+## Best practices
+
+<Steps>
+  <Step title="Use specific keys">
+    Choose keys that clearly identify what changed:
+    
+    ```ts
+    // Good
+    reactivityKeys: { user: [userId] }
+    reactivityKeys: ["users:list"]
+    
+    // Too broad
+    reactivityKeys: ["data"]
+    ```
+  </Step>
+  
+  <Step title="Match query and mutation keys">
+    Ensure your query and mutation keys align:
+    
+    ```ts
+    // Query
+    const userAtom = createUserAtom(userId).pipe(
+      Atom.withReactivity({ user: [userId] })
+    )
+    
+    // Mutation that invalidates it
+    const updateUserMutation = runtime.fn(
+      updateUserEffect,
+      { reactivityKeys: { user: [userId] } }
+    )
+    ```
+  </Step>
+  
+  <Step title="Invalidate after success">
+    Only invalidate queries when operations succeed:
+    
+    ```ts
+    const mutation = runtime.fn(
+      Effect.gen(function* () {
+        // This might fail
+        yield* dangerousOperation()
+        
+        // Only reaches here on success
+        yield* Reactivity.invalidate(["data"])
+      })
+    )
+    ```
+  </Step>
+  
+  <Step title="Group related invalidations">
+    Invalidate all related queries together:
+    
+    ```ts
+    reactivityKeys: {
+      user: [userId],
+      profile: [userId],
+      posts: [userId]
+    }
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  Invalidating too many keys can cause performance issues. Be strategic about
+  which queries need to refresh when specific mutations occur.
+</Warning>

@@ -1,0 +1,495 @@
+---
+title: Solid integration
+description: Use Effect Atom with Solid primitives for reactive state management
+---
+
+The `@effect-atom/atom-solid` package provides Solid primitives for integrating Effect Atom into your SolidJS applications.
+
+## Installation
+
+```bash
+pnpm add @effect-atom/atom-solid
+```
+
+## Core primitives
+
+### useAtomValue
+
+Read the current value of an atom and subscribe to changes.
+
+```tsx
+import { Atom, useAtomValue } from "@effect-atom/atom-solid"
+
+const countAtom = Atom.make(0)
+
+function Counter() {
+  const count = useAtomValue(countAtom)
+  return <h1>{count()}</h1>
+}
+```
+
+<Note>
+  `useAtomValue` returns a Solid `Accessor` that automatically updates when the atom value changes.
+</Note>
+
+#### Transform values
+
+You can pass a transformation function to derive a new value:
+
+```tsx
+function DoubleCounter() {
+  const doubled = useAtomValue(countAtom, (count) => count * 2)
+  return <h1>{doubled()}</h1>
+}
+```
+
+### useAtomSet
+
+Get a setter function for an atom without subscribing to its value.
+
+```tsx
+import { Atom, useAtomSet } from "@effect-atom/atom-solid"
+
+const countAtom = Atom.make(0)
+
+function CounterButton() {
+  const setCount = useAtomSet(countAtom)
+  
+  return (
+    <button onClick={() => setCount((count) => count + 1)}>
+      Increment
+    </button>
+  )
+}
+```
+
+#### Mode options
+
+For atoms that return `Result` types, you can specify how to handle the result:
+
+<CodeGroup>
+
+```tsx Value mode (default)
+function Component() {
+  const setCount = useAtomSet(effectfulAtom)
+  // Returns void immediately
+  setCount(42)
+}
+```
+
+```tsx Promise mode
+function Component() {
+  const setCount = useAtomSet(effectfulAtom, { mode: "promise" })
+  
+  const handleClick = async () => {
+    const result = await setCount(42)
+    console.log(result) // Success value
+  }
+}
+```
+
+```tsx Promise Exit mode
+import { Exit } from "effect"
+
+function Component() {
+  const setCount = useAtomSet(effectfulAtom, { mode: "promiseExit" })
+  
+  const handleClick = async () => {
+    const exit = await setCount(42)
+    if (Exit.isSuccess(exit)) {
+      console.log(exit.value)
+    } else {
+      console.error(exit.cause)
+    }
+  }
+}
+```
+
+</CodeGroup>
+
+### useAtom
+
+Combines `useAtomValue` and `useAtomSet` for reading and writing in a single primitive.
+
+```tsx
+import { Atom, useAtom } from "@effect-atom/atom-solid"
+
+const countAtom = Atom.make(0)
+
+function Counter() {
+  const [count, setCount] = useAtom(countAtom)
+  
+  return (
+    <div>
+      <h1>{count()}</h1>
+      <button onClick={() => setCount((c) => c + 1)}>+</button>
+      <button onClick={() => setCount((c) => c - 1)}>-</button>
+    </div>
+  )
+}
+```
+
+### useAtomRefresh
+
+Get a function to manually refresh an atom's value.
+
+```tsx
+import { Atom, useAtomValue, useAtomRefresh } from "@effect-atom/atom-solid"
+import { Effect } from "effect"
+import { Show } from "solid-js"
+
+const timeAtom = Atom.make(Effect.sync(() => Date.now()))
+
+function CurrentTime() {
+  const result = useAtomValue(timeAtom)
+  const refresh = useAtomRefresh(timeAtom)
+  
+  return (
+    <div>
+      <Show when={result()._tag === "Success"}>
+        {(r) => <p>Current time: {r().value}</p>}
+      </Show>
+      <button onClick={refresh}>Refresh</button>
+    </div>
+  )
+}
+```
+
+## Additional primitives
+
+### useAtomMount
+
+Mount an atom without reading or writing its value. Useful for atoms with side effects.
+
+```tsx
+import { Atom, useAtomMount } from "@effect-atom/atom-solid"
+
+const analyticsAtom = Atom.make(
+  Effect.gen(function* () {
+    yield* Effect.log("Component mounted")
+    yield* Effect.addFinalizer(() => Effect.log("Component unmounted"))
+  })
+)
+
+function TrackedComponent() {
+  useAtomMount(analyticsAtom)
+  return <div>This component is tracked</div>
+}
+```
+
+### useAtomSubscribe
+
+Subscribe to atom changes with a custom callback.
+
+```tsx
+import { Atom, useAtomSubscribe } from "@effect-atom/atom-solid"
+
+const countAtom = Atom.make(0)
+
+function Logger() {
+  useAtomSubscribe(
+    countAtom,
+    (count) => console.log("Count changed:", count),
+    { immediate: true }
+  )
+  return null
+}
+```
+
+### useAtomRef
+
+Subscribe to an `AtomRef` value.
+
+```tsx
+import { AtomRef, useAtomRef } from "@effect-atom/atom-solid"
+
+const formRef = AtomRef.make({ name: "", email: "" })
+
+function FormDisplay() {
+  const form = useAtomRef(formRef)
+  return <div>{form().name} - {form().email}</div>
+}
+```
+
+### useAtomInitialValues
+
+Set initial values for atoms on the server or during hydration.
+
+```tsx
+import { Atom, useAtomInitialValues } from "@effect-atom/atom-solid"
+
+interface User {
+  id: string
+  name: string
+}
+
+const userAtom = Atom.make<User | null>(null)
+
+function App(props: { initialUser: User }) {
+  useAtomInitialValues([[userAtom, props.initialUser]])
+  // ...
+}
+```
+
+## Registry context
+
+By default, all atoms share a global registry. You can create isolated registries using `RegistryProvider`.
+
+### RegistryProvider
+
+Provide a custom registry to a component tree.
+
+```tsx
+import { RegistryProvider } from "@effect-atom/atom-solid"
+
+function App() {
+  return (
+    <RegistryProvider
+      defaultIdleTTL={1000}
+      initialValues={[[countAtom, 10]]}
+    >
+      <Counter />
+    </RegistryProvider>
+  )
+}
+```
+
+#### Props
+
+- `children`: JSX elements to render
+- `initialValues`: Initial atom values as `[atom, value]` pairs
+- `scheduleTask`: Custom task scheduler function
+- `timeoutResolution`: Timeout resolution in milliseconds
+- `defaultIdleTTL`: Default time-to-live for idle atoms in milliseconds
+
+<Note>
+  Each `RegistryProvider` creates an isolated atom state scope. Atoms are not shared between different registries.
+</Note>
+
+### RegistryContext
+
+Access the current registry directly.
+
+```tsx
+import { RegistryContext } from "@effect-atom/atom-solid"
+import { useContext } from "solid-js"
+
+function CustomPrimitive() {
+  const registry = useContext(RegistryContext)
+  // Use registry directly
+}
+```
+
+## Working with effects
+
+Solid primitives work seamlessly with Effect atoms.
+
+```tsx
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-solid"
+import { Effect } from "effect"
+import { Show, createMemo } from "solid-js"
+
+interface User {
+  id: string
+  name: string
+}
+
+const userAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise(() =>
+      fetch("/api/user").then(r => r.json())
+    )
+    return response as User
+  })
+)
+
+function UserProfile() {
+  const result = useAtomValue(userAtom)
+  const user = createMemo(() => Result.getOrElse(result(), () => null))
+  
+  return (
+    <Show when={user()} fallback={<div>Loading...</div>}>
+      {(u) => (
+        <div>
+          <h2>{u().name}</h2>
+          <p>ID: {u().id}</p>
+        </div>
+      )}
+    </Show>
+  )
+}
+```
+
+## Working with streams
+
+Effect Atom works seamlessly with Effect streams for reactive data sources.
+
+```tsx
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-solid"
+import { Schedule, Stream, Cause } from "effect"
+import { Show, createMemo } from "solid-js"
+
+const countAtom = Atom.make(Stream.fromSchedule(Schedule.spaced(1000)))
+
+function StreamCounter() {
+  const result = useAtomValue(countAtom)
+  
+  return (
+    <Show
+      when={result()._tag === "Success"}
+      fallback={
+        <Show when={result()._tag === "Failure"}>
+          {(r) => <div>Error: {Cause.pretty(r().cause)}</div>}
+        </Show>
+      }
+    >
+      {(r) => <div>Count: {r().value}</div>}
+    </Show>
+  )
+}
+```
+
+### Pull-based streams
+
+For paginated or infinite scroll data:
+
+```tsx
+import { Atom, Result, useAtom } from "@effect-atom/atom-solid"
+import { Stream } from "effect"
+import { Show, For, createMemo } from "solid-js"
+
+const itemsAtom = Atom.pull(Stream.range(1, 100))
+
+function InfiniteList() {
+  const [result, loadMore] = useAtom(itemsAtom)
+  
+  const items = createMemo(() =>
+    result()._tag === "Success" ? result().value.items : []
+  )
+  
+  const done = createMemo(() =>
+    result()._tag === "Success" ? result().value.done : false
+  )
+  
+  return (
+    <div>
+      <ul>
+        <For each={items()}>
+          {(item) => <li>{item}</li>}
+        </For>
+      </ul>
+      <Show when={!done()}>
+        <button onClick={() => loadMore()}>Load more</button>
+      </Show>
+    </div>
+  )
+}
+```
+
+## Complete example
+
+<CodeGroup>
+
+```tsx Counter.tsx
+import { Atom, useAtomValue, useAtomSet } from "@effect-atom/atom-solid"
+
+const countAtom = Atom.make(0).pipe(Atom.keepAlive)
+
+function App() {
+  return (
+    <div>
+      <Counter />
+      <CounterButton />
+    </div>
+  )
+}
+
+function Counter() {
+  const count = useAtomValue(countAtom)
+  return <h1>{count()}</h1>
+}
+
+function CounterButton() {
+  const setCount = useAtomSet(countAtom)
+  return (
+    <button onClick={() => setCount((count) => count + 1)}>
+      Increment
+    </button>
+  )
+}
+```
+
+```tsx UserProfile.tsx
+import { Atom, Result, useAtomValue } from "@effect-atom/atom-solid"
+import { Effect, Cause } from "effect"
+import { Show, createMemo } from "solid-js"
+
+interface User {
+  id: string
+  name: string
+}
+
+const userAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise(() =>
+      fetch("/api/user").then(r => r.json())
+    )
+    return response as User
+  })
+)
+
+function UserProfile() {
+  const result = useAtomValue(userAtom)
+  
+  return (
+    <Show
+      when={result()._tag === "Success"}
+      fallback={
+        <Show
+          when={result()._tag === "Failure"}
+          fallback={<div>Loading user...</div>}
+        >
+          {(r) => <div>Error: {Cause.pretty(r().cause)}</div>}
+        </Show>
+      }
+    >
+      {(r) => (
+        <div>
+          <h2>{r().value.name}</h2>
+          <p>ID: {r().value.id}</p>
+        </div>
+      )}
+    </Show>
+  )
+}
+
+function App() {
+  return <UserProfile />
+}
+```
+
+</CodeGroup>
+
+## SolidStart and SSR
+
+Effect Atom supports server-side rendering with SolidStart.
+
+```tsx
+import { Atom, useAtomValue } from "@effect-atom/atom-solid"
+import { isServer } from "solid-js/web"
+
+const dataAtom = Atom.make(
+  Effect.gen(function* () {
+    if (isServer) {
+      // Server-side data fetching
+      return yield* fetchFromDatabase()
+    }
+    // Client-side data fetching
+    return yield* fetchFromAPI()
+  })
+)
+```
+
+<Warning>
+  Atoms with asynchronous effects return `Result.Initial` during SSR. Use `Result.getOrElse` to handle loading states.
+</Warning>

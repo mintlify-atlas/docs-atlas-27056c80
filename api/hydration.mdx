@@ -1,0 +1,375 @@
+---
+title: "Hydration"
+description: "Server-side rendering and hydration utilities for Effect Atom state management"
+---
+
+## Overview
+
+The Hydration module provides utilities for serializing and deserializing atom state, enabling server-side rendering (SSR) and state persistence. It allows you to capture atom state on the server and hydrate it on the client for seamless SSR experiences.
+
+## Types
+
+### DehydratedAtom
+
+A marker interface for dehydrated atom data.
+
+```typescript
+interface DehydratedAtom {
+  readonly "~@effect-atom/atom/DehydratedAtom": true
+}
+```
+
+### DehydratedAtomValue
+
+Represents a serialized atom with its key, value, and metadata.
+
+```typescript
+interface DehydratedAtomValue extends DehydratedAtom {
+  readonly key: string
+  readonly value: unknown
+  readonly dehydratedAt: number
+  readonly resultPromise?: Promise<unknown> | undefined
+}
+```
+
+<ParamField path="key" type="string">
+  Unique identifier for the atom in the registry.
+</ParamField>
+
+<ParamField path="value" type="unknown">
+  The serialized atom value.
+</ParamField>
+
+<ParamField path="dehydratedAt" type="number">
+  Timestamp (in milliseconds) when the atom was dehydrated.
+</ParamField>
+
+<ParamField path="resultPromise" type="Promise<unknown>">
+  Optional promise that resolves when an initially pending atom completes. Used for streaming SSR.
+</ParamField>
+
+## dehydrate
+
+Serializes the current state of all serializable atoms in a registry. This is typically called on the server after rendering to capture the current state.
+
+<ParamField path="registry" type="Registry" required>
+  The atom registry containing the atoms to dehydrate.
+</ParamField>
+
+<ParamField path="options" type="object">
+  Configuration options for dehydration.
+  
+  <Expandable title="properties">
+    <ParamField path="encodeInitialAs" type="'ignore' | 'promise' | 'value-only'">
+      How to handle atoms in the `Initial` state. Default is `"ignore"`.
+      
+      - `"ignore"` - Skip atoms in Initial state
+      - `"promise"` - Include a promise that resolves when the atom completes
+      - `"value-only"` - Include the Initial state value
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Returns
+
+<ResponseField name="dehydratedState" type="Array<DehydratedAtom>">
+  An array of dehydrated atom values that can be serialized to JSON and sent to the client.
+</ResponseField>
+
+### Example
+
+```typescript
+import * as Registry from "@effect-atom/atom/Registry"
+import * as Hydration from "@effect-atom/atom/Hydration"
+
+// On the server, after rendering
+const registry = Registry.make()
+
+// ... render your app and populate the registry ...
+
+// Dehydrate the state
+const dehydratedState = Hydration.dehydrate(registry, {
+  encodeInitialAs: "promise" // Include promises for pending atoms
+})
+
+// Serialize and send to client
+const serialized = JSON.stringify(dehydratedState)
+```
+
+<Note>
+  Only atoms marked as serializable using `Atom.makeSerializable` or `Atom.withSerializable` will be included in the dehydrated state.
+</Note>
+
+## toValues
+
+Converts a dehydrated state array to an array of `DehydratedAtomValue` objects. This is a type-safe cast helper.
+
+<ParamField path="state" type="ReadonlyArray<DehydratedAtom>" required>
+  The dehydrated state array to convert.
+</ParamField>
+
+### Returns
+
+<ResponseField name="values" type="Array<DehydratedAtomValue>">
+  An array of dehydrated atom values with full type information.
+</ResponseField>
+
+### Example
+
+```typescript
+const dehydratedState = Hydration.dehydrate(registry)
+const values = Hydration.toValues(dehydratedState)
+
+// Now you can access the value properties
+values.forEach(atom => {
+  console.log(atom.key, atom.value, atom.dehydratedAt)
+})
+```
+
+## hydrate
+
+Restores dehydrated atom state into a registry. This is typically called on the client during initialization to restore server-rendered state.
+
+<ParamField path="registry" type="Registry" required>
+  The atom registry to hydrate the state into.
+</ParamField>
+
+<ParamField path="dehydratedState" type="Iterable<DehydratedAtom>" required>
+  The dehydrated state to restore, typically received from the server.
+</ParamField>
+
+### Returns
+
+<ResponseField name="void" type="void">
+  This function modifies the registry in place and does not return a value.
+</ResponseField>
+
+### Example
+
+```typescript
+import * as Registry from "@effect-atom/atom/Registry"
+import * as Hydration from "@effect-atom/atom/Hydration"
+
+// On the client
+const registry = Registry.make()
+
+// Get the dehydrated state from the server (e.g., from a script tag)
+const dehydratedState = JSON.parse(
+  document.getElementById('__ATOM_STATE__')?.textContent || '[]'
+)
+
+// Hydrate the registry
+Hydration.hydrate(registry, dehydratedState)
+
+// Now the registry contains the server-rendered state
+```
+
+<Warning>
+  The dehydrated state must contain atoms that are defined in your application. If an atom key is not recognized, the value will be ignored.
+</Warning>
+
+## Complete SSR example
+
+Here's a complete example showing how to use hydration for server-side rendering:
+
+### Server-side (Next.js example)
+
+```typescript
+import { renderToString } from 'react-dom/server'
+import * as Registry from "@effect-atom/atom/Registry"
+import * as Hydration from "@effect-atom/atom/Hydration"
+import { RegistryProvider } from "@effect-atom/atom-react"
+import App from './App'
+
+export async function getServerSideProps() {
+  // Create a server-side registry
+  const registry = Registry.make()
+  
+  // Render the app with the registry
+  const html = renderToString(
+    <RegistryProvider registry={registry}>
+      <App />
+    </RegistryProvider>
+  )
+  
+  // Dehydrate the state
+  const dehydratedState = Hydration.dehydrate(registry, {
+    encodeInitialAs: "promise" // Support streaming SSR
+  })
+  
+  // Wait for any pending promises (optional)
+  const values = Hydration.toValues(dehydratedState)
+  await Promise.all(
+    values
+      .map(v => v.resultPromise)
+      .filter((p): p is Promise<unknown> => p !== undefined)
+  )
+  
+  return {
+    props: {
+      html,
+      dehydratedState
+    }
+  }
+}
+
+export default function Page({ html, dehydratedState }) {
+  return (
+    <>
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+      <script
+        id="__ATOM_STATE__"
+        type="application/json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(dehydratedState)
+        }}
+      />
+    </>
+  )
+}
+```
+
+### Client-side hydration
+
+```typescript
+import { hydrateRoot } from 'react-dom/client'
+import * as Registry from "@effect-atom/atom/Registry"
+import * as Hydration from "@effect-atom/atom/Hydration"
+import { RegistryProvider } from "@effect-atom/atom-react"
+import App from './App'
+
+// Create client-side registry
+const registry = Registry.make()
+
+// Get dehydrated state from the page
+const dehydratedStateElement = document.getElementById('__ATOM_STATE__')
+if (dehydratedStateElement) {
+  const dehydratedState = JSON.parse(dehydratedStateElement.textContent || '[]')
+  
+  // Hydrate the registry
+  Hydration.hydrate(registry, dehydratedState)
+}
+
+// Hydrate the React app
+hydrateRoot(
+  document.getElementById('root'),
+  <RegistryProvider registry={registry}>
+    <App />
+  </RegistryProvider>
+)
+```
+
+### Component using hydrated atoms
+
+```typescript
+import { useAtomValue } from "@effect-atom/atom-react"
+import { MyApiClient } from './api'
+
+function UserProfile({ userId }: { userId: string }) {
+  // This atom will be hydrated with server data
+  const userAtom = MyApiClient.query("Users", "getUser", {
+    path: { id: userId }
+  })
+  
+  const user = useAtomValue(userAtom)
+  
+  return Result.match(user, {
+    // On first render, this will show immediately with server data
+    Success: (data) => (
+      <div>
+        <h1>{data.name}</h1>
+        <p>{data.email}</p>
+      </div>
+    ),
+    Failure: (error) => <div>Error: {error.message}</div>,
+    Initial: () => <div>Loading...</div>,
+    Pending: () => <div>Loading...</div>
+  })
+}
+```
+
+## Streaming SSR with promises
+
+When using `encodeInitialAs: "promise"`, atoms that are still loading during server rendering will include a promise in the dehydrated state. This enables streaming SSR:
+
+```typescript
+// Server-side
+const dehydratedState = Hydration.dehydrate(registry, {
+  encodeInitialAs: "promise"
+})
+
+const values = Hydration.toValues(dehydratedState)
+
+// Send initial HTML immediately
+res.write(initialHtml)
+
+// Stream updates as atoms resolve
+for (const atom of values) {
+  if (atom.resultPromise) {
+    const resolvedValue = await atom.resultPromise
+    res.write(`
+      <script>
+        window.__updateAtom('${atom.key}', ${JSON.stringify(resolvedValue)})
+      </script>
+    `)
+  }
+}
+
+res.end()
+```
+
+<Note>
+  Streaming SSR requires additional client-side code to handle progressive hydration updates. The above example shows the general pattern.
+</Note>
+
+## Best practices
+
+### Mark atoms as serializable
+
+Only atoms explicitly marked as serializable will be included in dehydration:
+
+```typescript
+import * as Atom from "@effect-atom/atom/Atom"
+
+// Make an atom serializable
+const myAtom = Atom.makeSerializable(
+  Atom.make(Effect.succeed("initial value")),
+  {
+    encode: (value) => value,
+    decode: (value) => value
+  }
+)
+```
+
+### Use consistent registry instances
+
+Ensure the same registry instance is used throughout server rendering and is properly provided to the client:
+
+```typescript
+// ❌ Bad: Creating new registries
+function BadComponent() {
+  const registry = Registry.make() // New registry on every render!
+  return <RegistryProvider registry={registry}>...</RegistryProvider>
+}
+
+// ✅ Good: Single registry instance
+const registry = Registry.make()
+
+function GoodComponent() {
+  return <RegistryProvider registry={registry}>...</RegistryProvider>
+}
+```
+
+### Handle hydration mismatches
+
+If client-side atom definitions don't match server-side definitions, hydration will silently skip those atoms:
+
+```typescript
+// Ensure atom definitions are shared between server and client
+// Bad: Defining atoms in component files
+// Good: Define atoms in shared modules imported by both
+```
+
+<Warning>
+  Be careful with sensitive data. Dehydrated state is sent to the client and visible in the page source. Don't include secrets or private user data in dehydrated atoms.
+</Warning>
