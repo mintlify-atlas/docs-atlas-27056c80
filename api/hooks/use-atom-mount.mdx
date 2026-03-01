@@ -1,0 +1,101 @@
+---
+title: useAtomMount
+description: Mount an atom without subscribing to its value
+---
+
+## Overview
+
+The `useAtomMount` hook mounts an atom in the registry, ensuring it stays alive during the component's lifecycle without subscribing to its updates. This is useful when you want to keep an atom active but don't need to read its value.
+
+## Signature
+
+```tsx
+function useAtomMount<A>(atom: Atom<A>): void
+```
+
+<ParamField path="atom" type="Atom<A>" required>
+  The atom to mount in the registry
+</ParamField>
+
+## Behavior
+
+- Mounts the atom when the component renders
+- Keeps the atom mounted while the component is mounted
+- Unmounts the atom when the component unmounts
+- Does not trigger re-renders when the atom value changes
+
+## Usage
+
+### Keep an atom alive
+
+Use `useAtomMount` to keep an atom active without reading its value:
+
+```tsx
+import { Atom, useAtomMount } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+// An atom that performs background work
+const backgroundTaskAtom = Atom.make(
+  Effect.gen(function* () {
+    // Perform some background operation
+    yield* Effect.log("Background task running")
+    return "completed"
+  })
+)
+
+function BackgroundWorker() {
+  // Keep the atom mounted without reading its value
+  useAtomMount(backgroundTaskAtom)
+  
+  return <div>Background worker active</div>
+}
+```
+
+### Preload data
+
+Mount atoms to preload data without displaying it:
+
+```tsx
+const userDataAtom = Atom.make(fetchUserData())
+const settingsAtom = Atom.make(fetchSettings())
+
+function DataPreloader() {
+  // Preload both atoms
+  useAtomMount(userDataAtom)
+  useAtomMount(settingsAtom)
+  
+  return null // No UI needed
+}
+```
+
+### Side-effect atoms
+
+Keep atoms with side effects running:
+
+```tsx
+const analyticsAtom = Atom.make((get) => {
+  // Track page views
+  const cleanup = trackPageView()
+  get.addFinalizer(() => cleanup())
+  return "tracking"
+})
+
+function AnalyticsProvider({ children }: { children: React.ReactNode }) {
+  useAtomMount(analyticsAtom)
+  return <>{children}</>
+}
+```
+
+## Comparison with other hooks
+
+| Hook | Subscribes to updates | Returns value | Keeps mounted |
+|------|---------------------|---------------|---------------|
+| `useAtomValue` | Yes | Yes | Yes |
+| `useAtomMount` | No | No | Yes |
+| `useAtomSet` | No | No | Yes |
+
+## Related hooks
+
+- [useAtomValue](/api/hooks/use-atom-value) - Read atom values with subscription
+- [useAtomSet](/api/hooks/use-atom-set) - Write to atoms
+- [useAtomRefresh](/api/hooks/use-atom-refresh) - Manually refresh an atom

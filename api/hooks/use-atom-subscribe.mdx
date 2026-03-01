@@ -1,0 +1,184 @@
+---
+title: useAtomSubscribe
+description: Subscribe to atom changes with a callback function
+---
+
+## Overview
+
+The `useAtomSubscribe` hook subscribes to an atom's changes and calls a callback function whenever the value updates. This is useful for side effects that need to react to atom changes without triggering component re-renders.
+
+## Signature
+
+```tsx
+function useAtomSubscribe<A>(
+  atom: Atom<A>,
+  callback: (value: A) => void,
+  options?: { readonly immediate?: boolean }
+): void
+```
+
+<ParamField path="atom" type="Atom<A>" required>
+  The atom to subscribe to
+</ParamField>
+
+<ParamField path="callback" type="(value: A) => void" required>
+  Function called whenever the atom's value changes
+</ParamField>
+
+<ParamField path="options.immediate" type="boolean">
+  If `true`, the callback is called immediately with the current value. Default: `false`
+</ParamField>
+
+## Behavior
+
+- Subscribes to the atom when the component mounts
+- Calls the callback function on every atom update
+- Unsubscribes automatically when the component unmounts
+- Does not trigger component re-renders
+- With `immediate: true`, calls the callback with the current value immediately
+
+## Usage
+
+### Log atom changes
+
+```tsx
+import { Atom, useAtomSubscribe, useAtomSet } from "@effect-atom/atom-react"
+
+const counterAtom = Atom.make(0)
+
+function CounterWithLogging() {
+  const setCount = useAtomSet(counterAtom)
+  
+  // Log every change to the counter
+  useAtomSubscribe(counterAtom, (value) => {
+    console.log("Counter changed to:", value)
+  })
+  
+  return (
+    <button onClick={() => setCount(c => c + 1)}>
+      Increment
+    </button>
+  )
+}
+```
+
+### Sync to localStorage
+
+```tsx
+const preferencesAtom = Atom.make({
+  theme: "light",
+  language: "en"
+})
+
+function PreferencesSync() {
+  // Sync preferences to localStorage on every change
+  useAtomSubscribe(
+    preferencesAtom,
+    (prefs) => {
+      localStorage.setItem("preferences", JSON.stringify(prefs))
+    },
+    { immediate: true } // Save initial value too
+  )
+  
+  return null
+}
+```
+
+### Track analytics events
+
+```tsx
+const pageViewAtom = Atom.make({ page: "/", timestamp: Date.now() })
+
+function AnalyticsTracker() {
+  useAtomSubscribe(pageViewAtom, (view) => {
+    // Send analytics event
+    analytics.track("page_view", {
+      page: view.page,
+      timestamp: view.timestamp
+    })
+  })
+  
+  return null
+}
+```
+
+### Trigger notifications
+
+```tsx
+const notificationAtom = Atom.make<string | null>(null)
+
+function NotificationListener() {
+  useAtomSubscribe(notificationAtom, (message) => {
+    if (message !== null) {
+      // Show a toast notification
+      toast.show(message)
+    }
+  })
+  
+  return null
+}
+```
+
+### Immediate callback
+
+```tsx
+const userAtom = Atom.make({ id: 1, name: "Alice" })
+
+function UserLogger() {
+  // Log the current value immediately, then on every change
+  useAtomSubscribe(
+    userAtom,
+    (user) => {
+      console.log("Current user:", user)
+    },
+    { immediate: true }
+  )
+  
+  return null
+}
+```
+
+### Multiple subscriptions
+
+```tsx
+function MultipleTrackers() {
+  // Track different aspects separately
+  useAtomSubscribe(cartAtom, (cart) => {
+    console.log("Cart items:", cart.length)
+  })
+  
+  useAtomSubscribe(cartAtom, (cart) => {
+    const total = cart.reduce((sum, item) => sum + item.price, 0)
+    analytics.track("cart_total", { total })
+  })
+  
+  return null
+}
+```
+
+## Performance considerations
+
+<Note>
+`useAtomSubscribe` does not cause component re-renders. Use it for side effects that don't need to update the UI.
+</Note>
+
+<Warning>
+Avoid expensive operations in the callback function. Consider debouncing or throttling if the atom updates frequently.
+</Warning>
+
+## Comparison with useAtomValue
+
+| Hook | Re-renders component | Use case |
+|------|---------------------|----------|
+| `useAtomValue` | Yes | Display atom value in UI |
+| `useAtomSubscribe` | No | Side effects without re-renders |
+
+## Cleanup
+
+The subscription is automatically cleaned up when the component unmounts. If you need manual control, use `Registry.subscribe` directly in a `useEffect`.
+
+## Related hooks
+
+- [useAtomValue](/api/hooks/use-atom-value) - Read atom values with re-renders
+- [useAtomSet](/api/hooks/use-atom-set) - Update atom values
+- [useAtomMount](/api/hooks/use-atom-mount) - Mount atoms without subscribing

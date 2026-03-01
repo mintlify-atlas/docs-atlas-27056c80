@@ -100,7 +100,10 @@
               "api/hooks/use-atom-value",
               "api/hooks/use-atom-set",
               "api/hooks/use-atom",
-              "api/hooks/use-atom-suspense"
+              "api/hooks/use-atom-suspense",
+              "api/hooks/use-atom-mount",
+              "api/hooks/use-atom-refresh",
+              "api/hooks/use-atom-subscribe"
             ]
           }
         ]

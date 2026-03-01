@@ -656,6 +656,74 @@ const optimisticData = Atom.optimistic(dataAtom)
 registry.set(optimisticData, updateFn)
 ```
 
+### optimisticFn
+
+Create an optimistic function atom that shows intermediate updates.
+
+```typescript
+const optimisticFn: {
+  <Arg, A, E>(
+    effect: (arg: Arg, ctx: FnContext) => Effect.Effect<A, E>,
+    options?: { readonly reactivityKeys?: ReadonlyArray<Reactivity.Key> }
+  ): Writable<Result.Result<A, E>, Arg | Reset | Interrupt>
+}
+```
+
+<ParamField path="effect" type="(arg: Arg, ctx: FnContext) => Effect<A, E>" required>
+  The effectful function to execute
+</ParamField>
+
+<ParamField path="options.reactivityKeys" type="ReadonlyArray<Reactivity.Key>">
+  Keys to invalidate after successful execution
+</ParamField>
+
+**Example**
+
+```typescript
+const updateUserFn = Atom.optimisticFn(
+  (userId: number) => Effect.tryPromise(() => 
+    fetch(`/api/users/${userId}`, { method: 'PUT' }).then(r => r.json())
+  )
+)
+
+// Use with intermediate updates
+const result = useAtomValue(updateUserFn)
+const trigger = useAtomSet(updateUserFn)
+```
+
+### fnSync
+
+Create a synchronous function atom.
+
+```typescript
+const fnSync: {
+  <Arg, A>(
+    f: (arg: Arg, ctx: FnContext) => A,
+    options?: { readonly reactivityKeys?: ReadonlyArray<Reactivity.Key> }
+  ): Writable<A, Arg | Reset | Interrupt>
+}
+```
+
+<ParamField path="f" type="(arg: Arg, ctx: FnContext) => A" required>
+  The synchronous function to execute
+</ParamField>
+
+<ParamField path="options.reactivityKeys" type="ReadonlyArray<Reactivity.Key>">
+  Keys to invalidate after execution
+</ParamField>
+
+**Example**
+
+```typescript
+const calculateTotalFn = Atom.fnSync(
+  (items: Item[]) => items.reduce((sum, item) => sum + item.price, 0)
+)
+
+// Synchronous execution
+const calculate = useAtomSet(calculateTotalFn)
+calculate(cartItems) // Returns immediately
+```
+
 ## Batching
 
 ### batch
@@ -745,12 +813,83 @@ const modify: {
 }
 ```
 
+### update
+
+Update an atom's value using a function.
+
+```typescript
+const update: {
+  <R, W>(f: (_: R) => W): (self: Writable<R, W>) => Effect.Effect<void, never, AtomRegistry>
+  <R, W>(self: Writable<R, W>, f: (_: R) => W): Effect.Effect<void, never, AtomRegistry>
+}
+```
+
+**Example**
+
+```typescript
+yield* Atom.update(counterAtom, (n) => n + 1)
+```
+
+### refresh
+
+Rebuild an atom's value, re-running its computation or Effect.
+
+```typescript
+const refresh: <A>(self: Atom<A>) => Effect.Effect<void, never, AtomRegistry>
+```
+
+**Example**
+
+```typescript
+// Refresh data from API
+yield* Atom.refresh(userDataAtom)
+```
+
+### getResult
+
+Get a Result atom's value as an Effect, suspending until ready.
+
+```typescript
+const getResult: <A, E>(
+  self: Atom<Result.Result<A, E>>,
+  options?: { readonly suspendOnWaiting?: boolean }
+) => Effect.Effect<A, E, AtomRegistry>
+```
+
+<ParamField path="options.suspendOnWaiting" type="boolean">
+  If true, suspends when the Result is in a waiting state
+</ParamField>
+
+**Example**
+
+```typescript
+// Get the successful value or fail with the error
+const userData = yield* Atom.getResult(userAtom)
+```
+
 ### toStream
 
 Convert an atom to a Stream of its values.
 
 ```typescript
 const toStream: <A>(self: Atom<A>) => Stream.Stream<A, never, AtomRegistry>
+```
+
+### toStreamResult
+
+Convert a Result atom to a Stream, emitting only successful values.
+
+```typescript
+const toStreamResult: <A, E>(
+  self: Atom<Result.Result<A, E>>
+) => Stream.Stream<A, E, AtomRegistry>
+```
+
+**Example**
+
+```typescript
+// Stream only successful user data
+const userStream = Atom.toStreamResult(userAtom)
 ```
 
 ## Utilities

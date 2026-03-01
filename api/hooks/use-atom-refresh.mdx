@@ -1,0 +1,155 @@
+---
+title: useAtomRefresh
+description: Get a function to manually refresh an atom's value
+---
+
+## Overview
+
+The `useAtomRefresh` hook returns a function that can be used to manually trigger a refresh of an atom's value. This is useful for refetching data or recalculating derived state on demand.
+
+## Signature
+
+```tsx
+function useAtomRefresh<A>(atom: Atom<A>): () => void
+```
+
+<ParamField path="atom" type="Atom<A>" required>
+  The atom to refresh
+</ParamField>
+
+**Returns:** A function that refreshes the atom when called
+
+## Behavior
+
+- Mounts the atom in the registry
+- Returns a stable refresh function
+- Calling the refresh function rebuilds the atom's value
+- For Effect-based atoms, the Effect is re-run
+- For computed atoms, the computation is re-executed
+
+## Usage
+
+### Refresh data on demand
+
+```tsx
+import { Atom, useAtomValue, useAtomRefresh } from "@effect-atom/atom-react"
+import { Effect } from "effect"
+
+const userDataAtom = Atom.make(
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise(() => 
+      fetch("/api/user").then(r => r.json())
+    )
+    return response
+  })
+)
+
+function UserProfile() {
+  const result = useAtomValue(userDataAtom)
+  const refresh = useAtomRefresh(userDataAtom)
+  
+  return (
+    <div>
+      {Result.match(result, {
+        onInitial: () => <p>Loading...</p>,
+        onSuccess: (user) => (
+          <div>
+            <h1>{user.name}</h1>
+            <button onClick={refresh}>Refresh</button>
+          </div>
+        ),
+        onFailure: () => <p>Error loading user</p>
+      })}
+    </div>
+  )
+}
+```
+
+### Refresh on interval
+
+```tsx
+import { useEffect } from "react"
+
+function AutoRefreshData() {
+  const data = useAtomValue(dataAtom)
+  const refresh = useAtomRefresh(dataAtom)
+  
+  useEffect(() => {
+    // Refresh every 30 seconds
+    const interval = setInterval(refresh, 30000)
+    return () => clearInterval(interval)
+  }, [refresh])
+  
+  return <DataDisplay data={data} />
+}
+```
+
+### Refresh multiple atoms
+
+```tsx
+function RefreshAll() {
+  const refreshUsers = useAtomRefresh(usersAtom)
+  const refreshSettings = useAtomRefresh(settingsAtom)
+  const refreshNotifications = useAtomRefresh(notificationsAtom)
+  
+  const refreshAll = () => {
+    refreshUsers()
+    refreshSettings()
+    refreshNotifications()
+  }
+  
+  return <button onClick={refreshAll}>Refresh All Data</button>
+}
+```
+
+### Pull-to-refresh
+
+```tsx
+import { useState } from "react"
+
+function PullToRefreshList() {
+  const items = useAtomValue(itemsAtom)
+  const refresh = useAtomRefresh(itemsAtom)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  
+  const handleRefresh = async () => {
+    setIsRefreshing(true)
+    refresh()
+    // Wait a moment for the refresh to complete
+    await new Promise(resolve => setTimeout(resolve, 500))
+    setIsRefreshing(false)
+  }
+  
+  return (
+    <div>
+      <button onClick={handleRefresh} disabled={isRefreshing}>
+        {isRefreshing ? "Refreshing..." : "Pull to Refresh"}
+      </button>
+      <ItemsList items={items} />
+    </div>
+  )
+}
+```
+
+## Notes
+
+<Note>
+The refresh function is stable across renders - it won't cause unnecessary re-renders when used in dependency arrays.
+</Note>
+
+<Warning>
+Refreshing an atom will rebuild it from scratch, running any Effects or computations. Be mindful of expensive operations.
+</Warning>
+
+## Refresh vs. Set
+
+| Operation | Use case |
+|-----------|----------|
+| `refresh()` | Rebuild the atom's value (refetch data, recompute) |
+| `set(value)` | Update the atom with a new value directly |
+
+## Related hooks
+
+- [useAtomValue](/api/hooks/use-atom-value) - Read atom values
+- [useAtomSet](/api/hooks/use-atom-set) - Update atom values
+- [useAtomMount](/api/hooks/use-atom-mount) - Mount atoms without subscribing
